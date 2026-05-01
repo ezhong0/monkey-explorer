@@ -3,7 +3,7 @@
 
 import type { Page } from 'playwright-core';
 import type { Stagehand } from '@browserbasehq/stagehand';
-import type { AuthMode } from '../types.js';
+import type { AuthMode } from '../state/schema.js';
 import { aiFormSignIn } from './aiForm.js';
 import { interactiveSignIn } from './interactive.js';
 import { noneSignIn } from './none.js';

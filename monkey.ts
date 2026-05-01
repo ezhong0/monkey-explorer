@@ -2,15 +2,15 @@
 // monkey-explorer CLI entry. Argv parser → subcommand dispatcher.
 //
 // Subcommands:
-//   monkey init                            interactive setup
-//   monkey configure                       re-prompt fields
-//   monkey bootstrap-auth                  refresh BB context cookie
-//   monkey list [--since <h|d>]            show active + recent runs
-//   monkey ["mission" "mission" ...]       run missions
+//   monkey login                            global credential setup
+//   monkey target <add|list|use|rm|show>    manage named targets
+//   monkey configure                        edit defaults (models, caps)
+//   monkey bootstrap-auth [--target <name>] refresh BB context cookie
+//   monkey list [--since <h|d>]             show active + recent runs
+//   monkey ["mission" ...]                  run missions against current target
 //   monkey --help / monkey --version
 
 import mri from 'mri';
-import { resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
@@ -21,6 +21,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 interface Argv {
   _: string[];
+  // Universal
   target?: string;
   since?: string;
   'dry-run'?: boolean;
@@ -28,12 +29,38 @@ interface Argv {
   version?: boolean;
   json?: boolean;
   'non-interactive'?: boolean;
+  // login flags
+  'browserbase-key'?: string;
+  'openai-key'?: string;
+  'bb-project'?: string;
+  'anthropic-key'?: string;
+  // target add flags
+  url?: string;
+  'auth-mode'?: string;
+  'sign-in-url'?: string;
+  'test-email'?: string;
+  'test-password'?: string;
+  'custom-path'?: string;
+  'no-bootstrap'?: boolean;
 }
 
 function parseArgs(argv: string[]): Argv {
   return mri(argv, {
-    string: ['target', 'since'],
-    boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive'],
+    string: [
+      'target',
+      'since',
+      'browserbase-key',
+      'openai-key',
+      'bb-project',
+      'anthropic-key',
+      'url',
+      'auth-mode',
+      'sign-in-url',
+      'test-email',
+      'test-password',
+      'custom-path',
+    ],
+    boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive', 'no-bootstrap'],
     alias: { h: 'help', v: 'version' },
   }) as Argv;
 }
@@ -41,29 +68,41 @@ function parseArgs(argv: string[]): Argv {
 const HELP_TEXT = `monkey-explorer — AI-agent-driven exploratory testing for any web app.
 
 Usage:
-  monkey [--target <url>] "<mission>" ["<mission>" ...]
+  monkey [--target <name>] "<mission>" ["<mission>" ...]
   monkey [subcommand] [flags]
 
 Subcommands:
-  init                Interactive setup. Writes monkey.config.json + .env.local.
-  configure           Re-prompt every field with current values as defaults.
-  bootstrap-auth      Refresh the Browserbase context's cookie.
-  list                Show active + recent runs from ./reports/.
-                        --since <duration>   default 24h, accepts 1h / 7d / 30m
+  login                Set BB + OpenAI credentials (per-machine, once).
+                         Flags: --browserbase-key, --openai-key, --bb-project,
+                         --anthropic-key (all-or-nothing for non-interactive).
+  target add <name>    Add a named target (URL, auth, test creds).
+                         Flags: --url, --auth-mode, --sign-in-url, --test-email,
+                         --test-password, --custom-path, --no-bootstrap.
+  target list          Show all targets, * marks current.
+  target use <name>    Switch the current target.
+  target rm <name>     Delete a target.
+  target show [name]   Show target details (secrets redacted).
+  configure            Edit defaults (models, caps).
+  bootstrap-auth       Refresh the BB context cookie.
+                         Flags: --target <name> (default: current target).
+  list                 Show active + recent runs across all targets.
+                         Flags: --target <name>, --since <duration> (1h/7d/30m).
 
 Run flags:
-  --target <url>      Target app URL (or prompted from .last-target default).
-  --json              Emit final aggregate JSON to stdout (for scripting / agents).
-                      Streaming progress still goes to stderr.
-  --non-interactive   Error instead of prompting (for CI / agents). Aliases: -y avoidance.
-  --dry-run           Print plan without spawning sessions.
-  --help, -h          This message (or per-subcommand with \`monkey <cmd> --help\`).
-  --version, -v       Print framework version.
+  --target <name>      Run against a specific named target (default: current).
+  --json               Emit final aggregate JSON to stdout (for scripts/agents).
+                       Streaming progress still goes to stderr.
+  --non-interactive    Error instead of prompting (CI/agents).
+  --dry-run            Print plan without spawning sessions.
+  --help, -h           This message.
+  --version, -v        Print framework version.
 
 Examples:
-  monkey init
-  monkey --target https://staging.my-app.com "test the dashboard"
+  monkey login
+  monkey target add tamarind-staging
+  monkey "test the dashboard"
   monkey "test A" "test B" "test C"           # 3 missions in parallel
+  monkey --target prod "test signup"
   monkey list
   monkey list --since 7d
 `;
@@ -86,53 +125,57 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(`${await readVersion()}\n`);
     return 0;
   }
-
   if (args.help && args._.length === 0) {
     process.stdout.write(HELP_TEXT);
     return 0;
   }
 
   const subcommand = args._[0];
-  const projectDir = resolve(process.cwd());
-
-  // Friendly first-run error: if subcommand requires monkey.config.json
-  // and it's missing, point to `monkey init`.
-  const requiresConfig = ['configure', 'bootstrap-auth', 'list'].includes(subcommand) ||
-    !subcommand ||
-    (subcommand && !['init', 'configure', 'bootstrap-auth', 'list'].includes(subcommand));
-  if (requiresConfig && subcommand !== 'init' && !existsSync(join(projectDir, 'monkey.config.json'))) {
-    process.stderr.write(
-      '✗ No monkey config in this directory.\n' +
-        '  Run `monkey init` to set up a new project, or cd to one that has one.\n',
-    );
-    return 1;
-  }
 
   try {
     switch (subcommand) {
-      case 'init': {
-        const { runInit } = await import('./commands/init.js');
-        return runInit(projectDir);
+      case 'login': {
+        const { runLogin } = await import('./commands/login.js');
+        return runLogin({
+          browserbaseKey: args['browserbase-key'],
+          openaiKey: args['openai-key'],
+          bbProject: args['bb-project'],
+          anthropicKey: args['anthropic-key'],
+        });
+      }
+      case 'target': {
+        const { runTargetDispatch } = await import('./commands/target/index.js');
+        return runTargetDispatch({
+          positional: args._.slice(1),
+          addFlags: {
+            url: args.url,
+            authMode: args['auth-mode'],
+            signInUrl: args['sign-in-url'],
+            testEmail: args['test-email'],
+            testPassword: args['test-password'],
+            customPath: args['custom-path'],
+            noBootstrap: args['no-bootstrap'],
+          },
+        });
       }
       case 'configure': {
         const { runConfigure } = await import('./commands/configure.js');
-        return runConfigure(projectDir);
+        return runConfigure();
       }
       case 'bootstrap-auth': {
         const { runBootstrapAuth } = await import('./commands/bootstrap-auth.js');
-        return runBootstrapAuth({ projectDir });
+        return runBootstrapAuth({ targetName: args.target });
       }
       case 'list': {
         const { runList } = await import('./commands/list.js');
-        return runList({ projectDir, since: args.since });
+        return runList({ targetFilter: args.target, since: args.since });
       }
       default: {
         // Bare invocation OR mission(s) as positional args
         const positionalMissions = args._.filter((s) => s.length > 0);
         const { runRun } = await import('./commands/run.js');
         return runRun({
-          projectDir,
-          target: args.target,
+          targetName: args.target,
           positionalMissions,
           dryRun: Boolean(args['dry-run']),
           json: Boolean(args.json),

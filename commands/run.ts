@@ -1,6 +1,7 @@
-// `monkey [--target <url>] [...missions]` — bare invocation. Runs missions.
+// `monkey [--target <name>] [...missions]` — bare invocation. Runs missions
+// against the resolved target (current or --target).
 
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
@@ -8,25 +9,24 @@ import { randomUUID } from 'node:crypto';
 import { input } from '../lib/prompts/index.js';
 import * as log from '../lib/log/stderr.js';
 import { buildJsonOutput, emitJson } from '../lib/log/json.js';
-import { loadConfig } from '../lib/config/load.js';
-import { loadEnv, validateEnvForConfig } from '../lib/env/loadEnv.js';
+import { requireGlobalState } from '../lib/state/load.js';
+import { updateTarget } from '../lib/state/save.js';
+import { resolveTarget } from '../lib/state/predicates.js';
+import { getReportsBaseDir } from '../lib/state/path.js';
 import { createClient } from '../lib/bb/client.js';
-import { readContextId } from '../lib/bb/context.js';
-import { readLastTarget, writeLastTarget } from '../lib/env/lastTarget.js';
 import { sweepStaleTmpFiles, sweepStaleRunningReports } from '../lib/report/write.js';
 import { runMissions, summarizeCascadingFailures } from '../lib/runner/runMissions.js';
 import { computeCost, formatCostSummary } from '../lib/cost/compute.js';
+import { runBootstrapAuth } from './bootstrap-auth.js';
 import {
   installSigintHandler,
   registerCleanup,
   getRootSignal,
 } from '../lib/signal/abort.js';
-import { runBootstrapAuth } from './bootstrap-auth.js';
 import type { MissionResult, RunStatus } from '../lib/types.js';
 
 export interface RunOpts {
-  projectDir: string;
-  target: string | undefined;
+  targetName: string | undefined;
   positionalMissions: string[];
   dryRun: boolean;
   json: boolean;
@@ -51,44 +51,20 @@ async function readPackageVersion(): Promise<string> {
 }
 
 export async function runRun(opts: RunOpts): Promise<number> {
-  const cwd = resolve(opts.projectDir);
-  const reportsDir = join(cwd, 'reports');
+  const state = await requireGlobalState();
+  const credentials = state.credentials!;
+  const reportsBaseDir = getReportsBaseDir();
 
-  const { config, configDir } = await loadConfig(cwd);
-  const env = loadEnv(cwd);
-  validateEnvForConfig(env, config);
+  // Resolve target.
+  const { name: targetName, target } = resolveTarget(state, opts.targetName);
+  const reportsDir = join(reportsBaseDir, targetName);
 
-  // Sweep stale temp files + running reports from prior crashes (best-effort).
+  // Sweep stale temp/running reports for this target's reports dir.
   await sweepStaleTmpFiles(reportsDir, 10 * 60 * 1000);
-  await sweepStaleRunningReports({ reportsDir, wallClockMs: config.caps.wallClockMs });
-
-  // Resolve target URL
-  let target = opts.target;
-  if (!target) {
-    const lastTarget = await readLastTarget(cwd);
-    if (opts.nonInteractive) {
-      if (lastTarget) {
-        target = lastTarget;
-      } else {
-        throw new NonInteractiveError(
-          '--non-interactive set but URL is missing. Pass --target <url>.',
-        );
-      }
-    } else {
-      target = await input({
-        message: 'Target URL:',
-        default: lastTarget ?? undefined,
-        validate: (v) => {
-          try {
-            new URL(v);
-            return true;
-          } catch {
-            return 'Must be a valid URL';
-          }
-        },
-      });
-    }
-  }
+  await sweepStaleRunningReports({
+    reportsDir,
+    wallClockMs: state.defaults.caps.wallClockMs,
+  });
 
   // Resolve missions
   let missions = opts.positionalMissions;
@@ -105,10 +81,9 @@ export async function runRun(opts: RunOpts): Promise<number> {
     missions = [single];
   }
 
-  // Echo missions to stderr (defense against prompt injection — user sees
-  // exactly what the agent will receive, including any hidden chars).
+  // Echo missions to stderr (defense against prompt injection).
   log.blank();
-  log.info(`Target: ${target}`);
+  log.info(`Target: ${targetName} (${target.url})`);
   log.info(`Missions (${missions.length}):`);
   missions.forEach((m, i) => {
     log.info(`  [${i + 1}/${missions.length}] ${JSON.stringify(m)}`);
@@ -124,21 +99,22 @@ export async function runRun(opts: RunOpts): Promise<number> {
     return 0;
   }
 
-  // Need a context-id for the run. If missing, run bootstrap-auth first.
-  const contextId = await readContextId(cwd);
-  if (!contextId) {
-    log.warn('No .context-id — bootstrapping auth first.');
-    const code = await runBootstrapAuth({ projectDir: cwd, quiet: true });
+  // Auto-bootstrap if target has no contextId yet (e.g., user added with
+  // --no-bootstrap). Skip for `none` auth mode.
+  if (!target.contextId && target.authMode.kind !== 'none') {
+    log.warn(`Target "${targetName}" not bootstrapped — running bootstrap-auth first.`);
+    const code = await runBootstrapAuth({ targetName });
     if (code !== 0) return code;
   }
-  const finalContextId = (await readContextId(cwd))!;
 
-  // Wire SIGINT
+  // Re-load state in case bootstrap-auth wrote a contextId.
+  const refreshedState = await requireGlobalState();
+  const refreshedTarget = refreshedState.targets[targetName]!;
+
   installSigintHandler();
-  const bb = createClient(env.BROWSERBASE_API_KEY);
+  const bb = createClient(credentials.browserbaseApiKey);
   registerCleanup(async () => {
-    // Best-effort: just let the per-mission cleanups run. SIGINT propagates
-    // through the abort signal to runMission's finally blocks.
+    // Best-effort: per-mission cleanups handle SIGINT propagation.
   });
 
   const invocationId = randomUUID().slice(0, 8);
@@ -146,28 +122,29 @@ export async function runRun(opts: RunOpts): Promise<number> {
 
   const results = await runMissions({
     missions,
-    target,
+    target: refreshedTarget,
+    targetName,
     bb,
-    projectId: env.BROWSERBASE_PROJECT_ID,
-    contextId: finalContextId,
+    projectId: credentials.browserbaseProjectId,
+    contextId: refreshedTarget.contextId,
     reportsDir,
-    configDir,
-    authMode: config.authMode,
-    caps: config.caps,
-    stagehandModel: config.stagehandModel,
-    agentModel: config.agentModel,
-    env,
+    authMode: refreshedTarget.authMode,
+    caps: refreshedState.defaults.caps,
+    stagehandModel: refreshedState.defaults.stagehandModel,
+    agentModel: refreshedState.defaults.agentModel,
+    credentials,
     invocationId,
     signal: getRootSignal(),
     onReauthNeeded: async () => {
       log.fail('Auth expired. Re-authenticating…');
-      await runBootstrapAuth({ projectDir: cwd, quiet: true });
+      await runBootstrapAuth({ targetName });
     },
   });
 
-  // Write last-target after a successful run (atomic write — handles parallel
-  // monkey invocations from the same shell).
-  await writeLastTarget(cwd, target);
+  // Update lastUsed (best-effort — last-write-wins on concurrent runs).
+  await updateTarget(targetName, (t) => ({ ...t, lastUsed: new Date().toISOString() })).catch(
+    () => {},
+  );
 
   const walledMs = Date.now() - startedAt;
 
@@ -176,8 +153,6 @@ export async function runRun(opts: RunOpts): Promise<number> {
     emitJson(buildJsonOutput({ monkeyVersion: version, results, walledMs }));
   } else {
     printSummary(results, walledMs);
-
-    // Cascading shared failure (all missions errored with same root cause)
     const cascade = summarizeCascadingFailures(results);
     if (cascade) {
       log.blank();
@@ -185,7 +160,6 @@ export async function runRun(opts: RunOpts): Promise<number> {
     }
   }
 
-  // Exit code: 0 if any completed cleanly, else 1
   const anyCompleted = results.some((r) => r.status.kind === 'completed');
   return anyCompleted ? 0 : 1;
 }
@@ -198,7 +172,6 @@ function printSummary(results: MissionResult[], wallMs: number): void {
 
   log.info(`${completed}/${total} mission(s) completed in ${fmtDuration(wallMs)}${total > 1 ? ' (wall — ran in parallel)' : ''}.`);
 
-  // Aggregate findings count + severity counts
   let findingsTotal = 0;
   const sevCounts: Record<string, number> = {};
   for (const r of results) {
@@ -216,7 +189,6 @@ function printSummary(results: MissionResult[], wallMs: number): void {
     log.info(`${findingsTotal} findings — ${sevStr}`);
   }
 
-  // Status breakdown for non-completed missions
   const failed = results.filter((r) => r.status.kind !== 'completed');
   if (failed.length > 0) {
     log.info(`Issues:`);
@@ -231,7 +203,6 @@ function printSummary(results: MissionResult[], wallMs: number): void {
     }
   }
 
-  // Aggregate cost
   let totalDollars = 0;
   let totalTokens = 0;
   let bbMinutes = 0;
@@ -253,7 +224,6 @@ function printSummary(results: MissionResult[], wallMs: number): void {
     totalDollars,
   }));
 
-  // Report paths
   const writtenReports = results.map((r) => r.reportPath).filter(Boolean);
   if (writtenReports.length > 0) {
     log.info(`Report${writtenReports.length > 1 ? 's' : ''}:`);

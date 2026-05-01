@@ -49,7 +49,7 @@ export async function runMissions(opts: RunMissionsOpts): Promise<MissionResult[
         index,
         total,
         mission,
-        target: opts.target,
+        target: opts.target.url,
         status: { kind: 'errored', error: (err as Error).message, ranForMs: 0 },
         sessionId: null,
         replayUrl: null,

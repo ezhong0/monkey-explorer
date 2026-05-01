@@ -50,13 +50,8 @@ type _RunStatusExhaustivenessCheck = Exclude<
 const _runStatusOk: _RunStatusExhaustivenessCheck = true;
 void _runStatusOk;
 
-// ─── Auth mode (per project config) ──────────────────────────────────────────
-
-export type AuthMode =
-  | { kind: 'ai-form'; signInUrl: string }
-  | { kind: 'interactive'; signInUrl: string }
-  | { kind: 'none' }
-  | { kind: 'custom'; path: string };
+// AuthMode + Caps now live in lib/state/schema.ts (Zod-derived). Import from
+// there for canonical types.
 
 // ─── Probe result (per pre-flight) ───────────────────────────────────────────
 
@@ -111,10 +106,3 @@ export interface MissionResult {
   networkFailures: NetworkFailure[];
 }
 
-// ─── Caps ────────────────────────────────────────────────────────────────────
-
-export interface Caps {
-  wallClockMs: number;
-  maxSteps: number;
-  sessionTimeoutSec: number;
-}

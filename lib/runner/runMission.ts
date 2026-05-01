@@ -25,15 +25,13 @@ import { extractFindings } from '../stagehand/extract.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
-  Caps,
-  AuthMode,
   ConsoleEvent,
   Finding,
   MissionResult,
   NetworkFailure,
   RunStatus,
 } from '../types.js';
-import type { Env } from '../env/loadEnv.js';
+import type { AuthMode, Caps, Credentials, Target } from '../state/schema.js';
 
 export interface RunMissionOpts {
   // Mission + parallel context
@@ -41,18 +39,20 @@ export interface RunMissionOpts {
   index: number;
   total: number;
   invocationId: string;
-  target: string;
+  /** The resolved Target object (full record). */
+  target: Target;
+  /** Target name (for log messages, report linkage). */
+  targetName: string;
   // Wiring
   bb: Browserbase;
   projectId: string;
   contextId: string;
   reportsDir: string;
-  configDir: string;
   authMode: AuthMode;
   caps: Caps;
   stagehandModel: string;
   agentModel: string;
-  env: Env;
+  credentials: Credentials;
   signal: AbortSignal;
   // Auto-reauth callback — runMission asks the caller to refresh the
   // BB context's cookie when probe returns sign-in-page.
@@ -91,7 +91,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     const initial = await writeReportInitial({
       reportsDir: opts.reportsDir,
       startedAt,
-      target: opts.target,
+      target: opts.target.url,
       mission: opts.mission,
       sessionId: session.id,
       liveViewUrl: session.liveViewUrl || null,
@@ -114,11 +114,11 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   // Connect Stagehand.
   try {
     stagehandHandle = await createStagehand({
-      apiKey: opts.env.BROWSERBASE_API_KEY,
+      apiKey: opts.credentials.browserbaseApiKey,
       projectId: opts.projectId,
       sessionId: session.id,
       modelName: opts.stagehandModel,
-      modelApiKey: opts.env.OPENAI_API_KEY,
+      modelApiKey: opts.credentials.openaiApiKey,
       logPrefix: prefix,
     });
   } catch (err) {
@@ -136,13 +136,13 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   // Probe → maybe re-auth.
   try {
     const page = await stagehandHandle.page();
-    let probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target });
+    let probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url });
 
     if (probeResult.kind === 'sign-in-page') {
       log.fail(`${prefix} Auth expired. Re-authenticating…`);
       await opts.onReauthNeeded(); // refreshes BB context cookie
       // After re-auth, the session's cookie may need a re-navigation.
-      probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target });
+      probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url });
     }
 
     if (probeResult.kind !== 'ok') {
@@ -150,7 +150,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
         probeResult.kind === 'unreachable'
           ? `unreachable: ${probeResult.details}`
           : probeResult.kind === 'sign-in-page'
-            ? 're-auth failed; run `monkey configure`'
+            ? `re-auth failed; run \`monkey bootstrap-auth --target ${opts.targetName}\``
             : `unknown auth state: ${probeResult.details}`;
       return await finalize(opts, {
         session,
@@ -191,7 +191,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     const result = await executeAgent({
       stagehand: stagehandHandle.stagehand,
       agentModel: opts.agentModel,
-      agentApiKey: opts.env.OPENAI_API_KEY,
+      agentApiKey: opts.credentials.openaiApiKey,
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
       signal: opts.signal,
@@ -273,9 +273,9 @@ async function finalize(
   const replayUrl = ctx.session?.replayUrl ?? '';
   const targetOrigin = (() => {
     try {
-      return new URL(opts.target).origin;
+      return new URL(opts.target.url).origin;
     } catch {
-      return opts.target;
+      return opts.target.url;
     }
   })();
 
@@ -334,7 +334,7 @@ async function finalize(
     index: opts.index,
     total: opts.total,
     mission: opts.mission,
-    target: opts.target,
+    target: opts.target.url,
     status: ctx.status,
     sessionId: sessionId || null,
     replayUrl: replayUrl || null,
@@ -359,7 +359,7 @@ async function writeNotStartedReport(
   const initial = await writeReportInitial({
     reportsDir: opts.reportsDir,
     startedAt,
-    target: opts.target,
+    target: opts.target.url,
     mission: opts.mission,
     sessionId: tempSessionId,
     liveViewUrl: null,
@@ -384,7 +384,7 @@ async function writeNotStartedReport(
     index: opts.index,
     total: opts.total,
     mission: opts.mission,
-    target: opts.target,
+    target: opts.target.url,
     status,
     sessionId: null,
     replayUrl: null,

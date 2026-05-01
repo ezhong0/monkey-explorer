@@ -1,21 +1,19 @@
-// `monkey list` — show active + recent runs from ./reports/.
-//
-// TTY: interactive arrow-key list; enter prints the report.
-// Non-TTY: static text with URLs inline; greppable.
-//
-// Reads from ./reports/ (source of truth). Queries BB only for orphan
-// detection on `running` reports + live view URL fetch for true-active ones.
+// `monkey list` — show active + recent runs from the global reports dir.
+// Groups by target by default; --target filters.
 
-import { resolve, join } from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { select } from '../lib/prompts/index.js';
 import * as log from '../lib/log/stderr.js';
 import * as out from '../lib/log/stdout.js';
 import { isStdoutTTY } from '../lib/tty/isTTY.js';
 import { scanReports, type ReportEntry } from '../lib/report/scan.js';
-import { loadEnv } from '../lib/env/loadEnv.js';
+import { requireGlobalState } from '../lib/state/load.js';
+import { getReportsBaseDir, getReportsDirForTarget } from '../lib/state/path.js';
 import { createClient } from '../lib/bb/client.js';
+import { readFile } from 'node:fs/promises';
 
 interface DisplayEntry {
   filePath: string;
@@ -26,11 +24,11 @@ interface DisplayEntry {
   findingsCount: number | null;
   liveViewUrl: string | null;
   replayUrl: string | null;
-  isOrphan: boolean; // running per file but session is dead
+  isOrphan: boolean;
+  targetName: string;
 }
 
 function parseSinceFlag(s: string | undefined): number {
-  // Default: 24h
   if (!s) return 24 * 60 * 60 * 1000;
   const m = s.match(/^(\d+)([hdm])$/);
   if (!m) {
@@ -55,38 +53,59 @@ function fmtDuration(ms: number | null): string {
 }
 
 function fmtTime(iso: string): string {
-  return iso.slice(11, 16); // HH:MM
+  return iso.slice(11, 16);
 }
 
 function statusIcon(status: string): string {
   switch (status) {
-    case 'completed':
-      return '✓';
+    case 'completed': return '✓';
     case 'errored':
     case 'extract_failed':
-    case 'not_started':
-      return '✗';
+    case 'not_started': return '✗';
     case 'timed_out':
     case 'aborted':
     case 'exceeded_tokens':
-      return '⚠';
-    case 'interrupted':
-      return '⚠';
-    default:
-      return ' ';
+    case 'interrupted': return '⚠';
+    default: return ' ';
   }
 }
 
 export async function runList(opts: {
-  projectDir: string;
+  targetFilter: string | undefined;
   since: string | undefined;
 }): Promise<number> {
-  const cwd = resolve(opts.projectDir);
-  const reportsDir = join(cwd, 'reports');
+  const state = await requireGlobalState();
+  const reportsBaseDir = getReportsBaseDir();
   const sinceMs = parseSinceFlag(opts.since);
   const cutoff = Date.now() - sinceMs;
 
-  const all = await scanReports(reportsDir);
+  // Determine which target dirs to scan.
+  let targetNames: string[];
+  if (opts.targetFilter) {
+    if (!state.targets[opts.targetFilter]) {
+      log.fail(`Target "${opts.targetFilter}" not found.`);
+      return 1;
+    }
+    targetNames = [opts.targetFilter];
+  } else {
+    if (!existsSync(reportsBaseDir)) {
+      log.info('No monkey runs found in the time window.');
+      return 0;
+    }
+    targetNames = (await readdir(reportsBaseDir, { withFileTypes: true }))
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+  }
+
+  // Collect reports across all relevant target dirs.
+  const all: Array<ReportEntry & { targetName: string }> = [];
+  for (const targetName of targetNames) {
+    const dir = getReportsDirForTarget(targetName);
+    if (!existsSync(dir)) continue;
+    const entries = await scanReports(dir);
+    for (const e of entries) all.push({ ...e, targetName });
+  }
+
   const filtered = all.filter(
     (r) => new Date(r.frontMatter.started_at).getTime() >= cutoff,
   );
@@ -97,9 +116,8 @@ export async function runList(opts: {
     return 0;
   }
 
-  // Build display entries
   const display: DisplayEntry[] = await Promise.all(
-    filtered.map(async (e) => buildDisplayEntry(cwd, e)),
+    filtered.map(async (e) => buildDisplayEntry(state.credentials!.browserbaseApiKey, e)),
   );
 
   if (isStdoutTTY()) {
@@ -110,7 +128,10 @@ export async function runList(opts: {
   }
 }
 
-async function buildDisplayEntry(cwd: string, e: ReportEntry): Promise<DisplayEntry> {
+async function buildDisplayEntry(
+  bbKey: string,
+  e: ReportEntry & { targetName: string },
+): Promise<DisplayEntry> {
   const fm = e.frontMatter;
   const base: DisplayEntry = {
     filePath: e.filePath,
@@ -122,33 +143,24 @@ async function buildDisplayEntry(cwd: string, e: ReportEntry): Promise<DisplayEn
     liveViewUrl: null,
     replayUrl: null,
     isOrphan: false,
+    targetName: e.targetName,
   };
 
   if (fm.status !== 'running' && fm.status !== 'not_started' && 'finished_at' in fm) {
-    base.durationMs =
-      new Date(fm.finished_at).getTime() - new Date(fm.started_at).getTime();
+    base.durationMs = new Date(fm.finished_at).getTime() - new Date(fm.started_at).getTime();
   }
+  if ('findings_count' in fm) base.findingsCount = fm.findings_count;
+  if ('replay_url' in fm) base.replayUrl = fm.replay_url;
 
-  if ('findings_count' in fm) {
-    base.findingsCount = fm.findings_count;
-  }
-
-  if ('replay_url' in fm) {
-    base.replayUrl = fm.replay_url;
-  }
-
-  // For running reports: BB-check that session is actually live; if not, mark orphan.
   if (fm.status === 'running' && fm.session_id) {
     try {
-      const env = loadEnv(cwd);
-      const bb = createClient(env.BROWSERBASE_API_KEY);
+      const bb = createClient(bbKey);
       const sess = await bb.sessions.retrieve(fm.session_id);
       const sessStatus = (sess as { status?: string }).status;
       if (sessStatus && sessStatus !== 'RUNNING') {
         base.status = 'interrupted';
         base.isOrphan = true;
       } else {
-        // True active: fetch live view URL
         try {
           const debug = await bb.sessions.debug(fm.session_id);
           base.liveViewUrl = debug.debuggerFullscreenUrl ?? debug.debuggerUrl ?? null;
@@ -161,7 +173,6 @@ async function buildDisplayEntry(cwd: string, e: ReportEntry): Promise<DisplayEn
       // BB unreachable — show as running per file
     }
   }
-
   return base;
 }
 
@@ -174,7 +185,7 @@ function renderStatic(entries: DisplayEntry[]): void {
     for (const e of active) {
       const dur = `[${fmtDuration(e.durationMs)}]`.padEnd(10);
       const url = e.liveViewUrl ?? '';
-      out.out(`  ${dur} ${e.mission}    ${url}`);
+      out.out(`  ${e.targetName.padEnd(20)} ${dur} ${e.mission}    ${url}`);
     }
   }
 
@@ -184,10 +195,9 @@ function renderStatic(entries: DisplayEntry[]): void {
       const t = fmtTime(e.startedAt);
       const icon = statusIcon(e.status);
       const dur = fmtDuration(e.durationMs).padEnd(8);
-      const findings =
-        e.findingsCount != null ? `${e.findingsCount} findings`.padEnd(12) : ' '.repeat(12);
+      const findings = e.findingsCount != null ? `${e.findingsCount} findings`.padEnd(12) : ' '.repeat(12);
       const url = e.replayUrl ?? '';
-      out.out(`  ${t}  ${icon}  ${e.mission}  ${dur}  ${findings}  ${url}`);
+      out.out(`  ${t}  ${icon}  ${e.targetName.padEnd(20)} ${e.mission}  ${dur}  ${findings}  ${url}`);
     }
   }
 }
@@ -198,7 +208,7 @@ async function renderInteractive(entries: DisplayEntry[]): Promise<number> {
     const icon = statusIcon(e.status);
     const dur = fmtDuration(e.durationMs).padEnd(8);
     const findings = e.findingsCount != null ? `${e.findingsCount} findings` : '';
-    const label = `${t}  ${icon}  ${e.mission}  ${dur}  ${findings}`;
+    const label = `${t}  ${icon}  ${e.targetName.padEnd(20)} ${e.mission}  ${dur}  ${findings}`;
     return { name: label, value: i };
   });
 
@@ -219,7 +229,6 @@ async function renderInteractive(entries: DisplayEntry[]): Promise<number> {
     return 0;
   }
 
-  // Print report contents to stdout
   const text = await readFile(entry.filePath, 'utf-8').catch(() => '');
   out.outRaw(text);
   return 0;
@@ -234,3 +243,6 @@ function tryOpenInBrowser(url: string): void {
     // Fall through; URL was logged
   }
 }
+
+// Avoid unused-symbol warnings.
+void join;

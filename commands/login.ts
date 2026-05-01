@@ -1,18 +1,21 @@
-// `monkey login` — set or update global credentials (BB key, OpenAI key,
-// optional Anthropic key). Per-machine. Mode 0600.
+// `monkey login` — set or update global credentials (BB key + at least one
+// of OpenAI/Anthropic). Per-machine. Mode 0600.
 //
 // Two flows:
 //
 //  - Interactive: prompts for each field, with current values as defaults if
-//    state already exists (key rotation flow).
-//  - Non-interactive: all required flags present → no prompts. Required flags
-//    are --browserbase-key and --openai-key. --bb-project picks an explicit
-//    BB project ID; if absent, we auto-discover (single project) or error
+//    state already exists (key rotation flow). OpenAI and Anthropic are both
+//    optional individually; at least one must be provided.
+//  - Non-interactive: --browserbase-key required, plus at least one of
+//    --openai-key / --anthropic-key. --bb-project picks an explicit BB
+//    project ID; if absent, we auto-discover (single project) or error
 //    (multiple, ambiguous in non-interactive mode).
 //
+// Run-time enforces that the configured (stagehandModel, agentModel,
+// adjudicatorModel) all have a matching key — see lib/stagehand/modelKey.ts
+// and the preflight in commands/run.ts.
+//
 // "Fully succeed or fully fail": partial flags do NOT fall back to prompts.
-// Either the user provides everything required for non-interactive, or runs
-// interactively.
 
 import { input, password, select } from '../lib/prompts/index.js';
 import * as log from '../lib/log/stderr.js';
@@ -42,25 +45,27 @@ export async function runLogin(opts: LoginOpts): Promise<number> {
   const existing = await loadGlobalState();
   const existingCreds = existing?.credentials;
 
-  const allRequiredFlagsPresent = !!(opts.browserbaseKey && opts.openaiKey);
+  // Required for non-interactive: --browserbase-key + at least one of
+  // --openai-key/--anthropic-key.
+  const hasFlagDriven = !!(opts.browserbaseKey && (opts.openaiKey || opts.anthropicKey));
 
   let bbKey: string;
-  let openaiKey: string;
+  let openaiKey: string | undefined;
   let bbProjectId: string;
   let anthropicKey: string | undefined;
 
-  if (allRequiredFlagsPresent) {
+  if (hasFlagDriven) {
     // Non-interactive path: validate flags, no prompts.
     bbKey = opts.browserbaseKey!;
     if (!bbKey.startsWith('bb_')) {
       log.fail('--browserbase-key must start with "bb_".');
       return 1;
     }
-    openaiKey = opts.openaiKey!;
-    if (!openaiKey.startsWith('sk-')) {
+    if (opts.openaiKey && !opts.openaiKey.startsWith('sk-')) {
       log.fail('--openai-key must start with "sk-".');
       return 1;
     }
+    openaiKey = opts.openaiKey || undefined;
 
     // Validate BB key.
     let bbProjects: Awaited<ReturnType<typeof listProjects>>;
@@ -95,25 +100,27 @@ export async function runLogin(opts: LoginOpts): Promise<number> {
       return 1;
     }
 
-    // Validate OpenAI key.
-    try {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${openaiKey}` },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) {
-        log.fail(`OpenAI API key validation failed: HTTP ${res.status}`);
+    // Validate OpenAI key if provided.
+    if (openaiKey) {
+      try {
+        const res = await fetch('https://api.openai.com/v1/models', {
+          headers: { Authorization: `Bearer ${openaiKey}` },
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+          log.fail(`OpenAI API key validation failed: HTTP ${res.status}`);
+          return 1;
+        }
+      } catch (err) {
+        log.fail(`OpenAI API key validation failed: ${(err as Error).message}`);
         return 1;
       }
-    } catch (err) {
-      log.fail(`OpenAI API key validation failed: ${(err as Error).message}`);
-      return 1;
     }
 
     anthropicKey = opts.anthropicKey || undefined;
   } else {
-    // Interactive path. If any flag is provided but not all required, that's
-    // a partial-flags error per the "fully succeed or fully fail" rule.
+    // Interactive path. Partial-flags rule: if any flag was passed but BB key
+    // is missing, OR neither LLM key was provided, error rather than prompt.
     const partialFlagsProvided = !!(
       opts.browserbaseKey ||
       opts.openaiKey ||
@@ -122,14 +129,13 @@ export async function runLogin(opts: LoginOpts): Promise<number> {
     );
     if (partialFlagsProvided) {
       log.fail('Partial flags provided. Either pass all required flags or none.');
-      log.info('  Required for non-interactive: --browserbase-key, --openai-key.');
-      log.info('  Optional: --bb-project, --anthropic-key.');
+      log.info('  Required for non-interactive: --browserbase-key + at least one of --openai-key/--anthropic-key.');
+      log.info('  Optional: --bb-project.');
       return 1;
     }
     if (opts.nonInteractive) {
       log.fail('--non-interactive set but no credential flags provided.');
-      log.info('  Required: --browserbase-key, --openai-key.');
-      log.info('  Optional: --bb-project, --anthropic-key.');
+      log.info('  Required: --browserbase-key + at least one of --openai-key/--anthropic-key.');
       return 1;
     }
 
@@ -165,31 +171,44 @@ export async function runLogin(opts: LoginOpts): Promise<number> {
       });
     }
 
-    openaiKey = await password({
-      message: 'OpenAI API key:',
-      mask: '*',
-      validate: (v) => (v.startsWith('sk-') ? true : 'Expected key to start with sk-'),
-    });
+    log.blank();
+    log.info('At least one LLM key is required (OpenAI and/or Anthropic). Leave blank to skip either.');
 
-    try {
-      const res = await fetch('https://api.openai.com/v1/models', {
-        headers: { Authorization: `Bearer ${openaiKey}` },
-        signal: AbortSignal.timeout(15_000),
-      });
-      if (!res.ok) {
-        log.fail(`OpenAI API key validation failed: HTTP ${res.status}`);
-        return 1;
-      }
-    } catch (err) {
-      log.fail(`OpenAI API key validation failed: ${(err as Error).message}`);
+    const openaiInput = await input({
+      message: 'OpenAI API key (leave blank if Anthropic-only):',
+      default: existingCreds?.openaiApiKey,
+    });
+    openaiKey = openaiInput?.trim() || undefined;
+    if (openaiKey && !openaiKey.startsWith('sk-')) {
+      log.fail('OpenAI API key must start with "sk-".');
       return 1;
     }
+    if (openaiKey) {
+      try {
+        const res = await fetch('https://api.openai.com/v1/models', {
+          headers: { Authorization: `Bearer ${openaiKey}` },
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+          log.fail(`OpenAI API key validation failed: HTTP ${res.status}`);
+          return 1;
+        }
+      } catch (err) {
+        log.fail(`OpenAI API key validation failed: ${(err as Error).message}`);
+        return 1;
+      }
+    }
 
-    anthropicKey = await input({
-      message: 'Anthropic API key (optional, leave blank to skip):',
+    const anthropicInput = await input({
+      message: 'Anthropic API key (leave blank if OpenAI-only):',
       default: existingCreds?.anthropicApiKey,
     });
-    anthropicKey = anthropicKey?.trim() || undefined;
+    anthropicKey = anthropicInput?.trim() || undefined;
+
+    if (!openaiKey && !anthropicKey) {
+      log.fail('At least one of OpenAI or Anthropic key is required.');
+      return 1;
+    }
   }
 
   // Build + save state. Preserve existing defaults + targets if present.

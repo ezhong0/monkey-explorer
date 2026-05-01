@@ -41,3 +41,43 @@ export function formatCostSummary(c: CostBreakdown): string {
   parts.push(`≈ $${c.totalDollars.toFixed(2)} total`);
   return `Cost: ${parts.join(' + ').replace(' + ≈', ' ≈')}`;
 }
+
+// Per-mission LLM-cost band — wide on purpose. Real cost depends on how many
+// steps the agent takes and how big the page DOM is. The lower bound assumes
+// the agent finishes in a few steps; the upper assumes it runs near maxSteps
+// with large screenshots / DOM payloads.
+const LLM_DOLLARS_PER_MISSION_LOW = 0.30;
+const LLM_DOLLARS_PER_MISSION_HIGH = 3.00;
+
+export interface CostEstimate {
+  bbDollarsMax: number;
+  llmDollarsLow: number;
+  llmDollarsHigh: number;
+  totalLow: number;
+  totalHigh: number;
+}
+
+export function estimateCostRange(opts: {
+  missionCount: number;
+  wallClockMs: number;
+}): CostEstimate {
+  const minutesPerMission = opts.wallClockMs / 60_000;
+  const bbDollarsMax = opts.missionCount * minutesPerMission * BB_DOLLARS_PER_MINUTE;
+  const llmDollarsLow = opts.missionCount * LLM_DOLLARS_PER_MISSION_LOW;
+  const llmDollarsHigh = opts.missionCount * LLM_DOLLARS_PER_MISSION_HIGH;
+  return {
+    bbDollarsMax,
+    llmDollarsLow,
+    llmDollarsHigh,
+    totalLow: llmDollarsLow,           // BB is pay-per-actual-minute; floor is just LLM
+    totalHigh: bbDollarsMax + llmDollarsHigh,
+  };
+}
+
+export function formatCostEstimate(e: CostEstimate, missionCount: number): string {
+  return (
+    `Estimated cost: $${e.totalLow.toFixed(2)}–$${e.totalHigh.toFixed(2)} ` +
+    `(up to $${e.bbDollarsMax.toFixed(2)} Browserbase + $${e.llmDollarsLow.toFixed(2)}–$${e.llmDollarsHigh.toFixed(2)} LLM, ` +
+    `${missionCount} mission${missionCount === 1 ? '' : 's'}).`
+  );
+}

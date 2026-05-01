@@ -87,10 +87,15 @@ export const CapsSchema = z.object({
 
 // ─── Credentials block (per-user-machine) ───
 
+// `openaiApiKey` and `anthropicApiKey` are both optional — at least one is
+// required at run time. login.ts asks for at least one; the run.ts preflight
+// validates that the configured (stagehandModel, agentModel, adjudicatorModel)
+// each have a matching key and fails loud if they don't, before any session
+// spawns.
 export const CredentialsSchema = z.object({
   browserbaseApiKey: z.string().min(1),
   browserbaseProjectId: z.string().min(1),
-  openaiApiKey: z.string().min(1),
+  openaiApiKey: z.string().min(1).optional(),
   anthropicApiKey: z.string().min(1).optional(),
   // Optional override for the Anthropic API base URL. Set to e.g. an Azure
   // Foundry endpoint (https://<resource>.services.ai.azure.com/anthropic)

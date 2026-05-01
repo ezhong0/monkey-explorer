@@ -126,7 +126,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       projectId: opts.projectId,
       sessionId: session.id,
       modelName: opts.stagehandModel,
-      modelApiKey: opts.credentials.openaiApiKey,
+      modelApiKey: pickModelApiKey(opts.stagehandModel, opts.credentials),
       logPrefix: prefix,
     });
   } catch (err) {

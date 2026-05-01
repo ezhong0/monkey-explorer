@@ -16,8 +16,15 @@ import { getReportsBaseDir } from '../lib/state/path.js';
 import { createClient } from '../lib/bb/client.js';
 import { sweepStaleTmpFiles, sweepStaleRunningReports } from '../lib/report/write.js';
 import { runMissions, summarizeCascadingFailures } from '../lib/runner/runMissions.js';
-import { computeCost, formatCostSummary } from '../lib/cost/compute.js';
+import {
+  computeCost,
+  estimateCostRange,
+  formatCostEstimate,
+  formatCostSummary,
+} from '../lib/cost/compute.js';
+import { modelProvider } from '../lib/stagehand/modelKey.js';
 import { runBootstrapAuth } from './bootstrap-auth.js';
+import type { Credentials, Defaults } from '../lib/state/schema.js';
 import {
   installSigintHandler,
   registerCleanup,
@@ -84,6 +91,14 @@ export async function runRun(opts: RunOpts): Promise<number> {
     missions = [single];
   }
 
+  // Preflight: ensure every model in defaults has a matching API key.
+  // Fails loud with an actionable message before any session spawns.
+  const keyValidation = validateModelKeys(state.defaults, credentials);
+  if (keyValidation) {
+    log.fail(keyValidation);
+    return 1;
+  }
+
   // Echo missions to stderr (defense against prompt injection).
   log.blank();
   log.info(`Target: ${targetName} (${target.url})`);
@@ -91,6 +106,15 @@ export async function runRun(opts: RunOpts): Promise<number> {
   missions.forEach((m, i) => {
     log.info(`  [${i + 1}/${missions.length}] ${JSON.stringify(m)}`);
   });
+  log.info(
+    formatCostEstimate(
+      estimateCostRange({
+        missionCount: missions.length,
+        wallClockMs: state.defaults.caps.wallClockMs,
+      }),
+      missions.length,
+    ),
+  );
   log.blank();
 
   if (opts.dryRun) {
@@ -263,6 +287,36 @@ function printSummary(results: MissionResult[], wallMs: number): void {
 
 function ranForMsOf(s: RunStatus): number | null {
   if ('ranForMs' in s) return s.ranForMs;
+  return null;
+}
+
+/**
+ * Returns null if every configured model has a matching API key, or a
+ * user-facing error string if any model would fail at runtime. Adjudicator
+ * model is optional; checked only if set.
+ */
+function validateModelKeys(defaults: Defaults, creds: Credentials): string | null {
+  const slots: Array<[label: string, model: string]> = [
+    ['stagehandModel', defaults.stagehandModel],
+    ['agentModel', defaults.agentModel],
+  ];
+  if (defaults.adjudicatorModel) slots.push(['adjudicatorModel', defaults.adjudicatorModel]);
+
+  for (const [label, model] of slots) {
+    const provider = modelProvider(model);
+    if (provider === 'anthropic' && !creds.anthropicApiKey) {
+      return (
+        `${label} is set to "${model}" but no Anthropic API key is configured. ` +
+        `Run \`monkey login\` to add one, or \`monkey config\` to switch ${label} to an OpenAI model.`
+      );
+    }
+    if ((provider === 'openai' || provider === 'other') && !creds.openaiApiKey) {
+      return (
+        `${label} is set to "${model}" but no OpenAI API key is configured. ` +
+        `Run \`monkey login\` to add one, or \`monkey config\` to switch ${label} to an Anthropic model.`
+      );
+    }
+  }
   return null;
 }
 

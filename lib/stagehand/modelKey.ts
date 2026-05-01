@@ -7,24 +7,37 @@
 import type { Credentials } from '../state/schema.js';
 
 export function pickModelApiKey(modelName: string, credentials: Credentials): string {
-  const slash = modelName.indexOf('/');
-  const provider = slash === -1 ? modelName : modelName.slice(0, slash);
+  const provider = modelProvider(modelName);
 
   switch (provider) {
     case 'anthropic': {
       const key = credentials.anthropicApiKey;
       if (!key) {
         throw new Error(
-          `Model "${modelName}" requires an Anthropic API key. Run \`monkey login\` to add one.`,
+          `Model "${modelName}" requires an Anthropic API key. Run \`monkey login\` to add one, or \`monkey config\` to switch to a different model.`,
         );
       }
       return key;
     }
     case 'openai':
-      return credentials.openaiApiKey;
-    default:
-      // Unknown provider — fall through to OpenAI key. Lets users experiment
-      // with provider strings the SDK supports without us blocklisting them.
-      return credentials.openaiApiKey;
+    default: {
+      // Unknown provider falls back to OpenAI; lets users experiment with
+      // provider strings the SDK supports without us blocklisting them.
+      const key = credentials.openaiApiKey;
+      if (!key) {
+        throw new Error(
+          `Model "${modelName}" requires an OpenAI API key. Run \`monkey login\` to add one, or \`monkey config\` to switch to an Anthropic model.`,
+        );
+      }
+      return key;
+    }
   }
+}
+
+export function modelProvider(modelName: string): 'anthropic' | 'openai' | 'other' {
+  const slash = modelName.indexOf('/');
+  const prefix = slash === -1 ? modelName : modelName.slice(0, slash);
+  if (prefix === 'anthropic') return 'anthropic';
+  if (prefix === 'openai') return 'openai';
+  return 'other';
 }

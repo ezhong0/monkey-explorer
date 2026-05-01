@@ -16,6 +16,7 @@ import { createClient } from '../lib/bb/client.js';
 import { createContext } from '../lib/bb/context.js';
 import { createSession } from '../lib/bb/session.js';
 import { createStagehand } from '../lib/stagehand/adapter.js';
+import { pickModelApiKey } from '../lib/stagehand/modelKey.js';
 import { dispatchSignIn } from '../lib/auth/dispatch.js';
 import { isSignedIn } from '../lib/probe/markerDetect.js';
 import { getRootSignal, installSigintHandler } from '../lib/signal/abort.js';
@@ -76,7 +77,7 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       projectId: credentials.browserbaseProjectId,
       sessionId: session.id,
       modelName: state.defaults.stagehandModel,
-      modelApiKey: credentials.openaiApiKey,
+      modelApiKey: pickModelApiKey(state.defaults.stagehandModel, credentials),
       logPrefix: '',
     });
 

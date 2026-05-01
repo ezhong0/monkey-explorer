@@ -35,6 +35,8 @@ export async function runTargetShow(name: string | undefined): Promise<number> {
     out.out(`customPath:     ${target.authMode.path}`);
     testEmail = target.authMode.testEmail;
     testPasswordSet = !!target.authMode.testPassword;
+  } else if (target.authMode.kind === 'cookie-jar') {
+    out.out(`cookieJarPath:  ${target.authMode.path}`);
   }
   if (testEmail) out.out(`testEmail:      ${testEmail}`);
   if (testPasswordSet) out.out(`testPassword:   ***`);

@@ -9,6 +9,7 @@
 // the "fully succeed or fully fail" rule for CI: one command provisions a
 // target end-to-end (state + cookie).
 
+import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { input, password, select } from '../../lib/prompts/index.js';
 import * as log from '../../lib/log/stderr.js';
@@ -21,16 +22,17 @@ import { runBootstrapAuth } from '../bootstrap-auth.js';
 export interface TargetAddOpts {
   name?: string;
   url?: string;
-  authMode?: string; // 'ai-form' | 'interactive' | 'none' | 'custom'
+  authMode?: string; // 'ai-form' | 'interactive' | 'none' | 'custom' | 'cookie-jar'
   signInUrl?: string;
   testEmail?: string;
   testPassword?: string;
   customPath?: string;
+  cookieJarPath?: string;
   noBootstrap?: boolean;
   nonInteractive?: boolean;
 }
 
-const VALID_AUTH_MODES = ['ai-form', 'interactive', 'none', 'custom'] as const;
+const VALID_AUTH_MODES = ['ai-form', 'interactive', 'none', 'custom', 'cookie-jar'] as const;
 
 const AUTH_MODE_CHOICES = [
   {
@@ -39,9 +41,14 @@ const AUTH_MODE_CHOICES = [
     description: 'Stagehand fills the sign-in form for you. Works for most password-form apps.',
   },
   {
+    name: 'Cookie jar (import storageState from your real browser)',
+    value: 'cookie-jar' as const,
+    description: 'For Google OAuth / SSO / MFA. Sign in once locally, export storageState JSON, monkey injects.',
+  },
+  {
     name: 'Interactive (sign in via Browserbase live view)',
     value: 'interactive' as const,
-    description: 'You sign in manually in your browser. Covers magic link, OAuth, SSO, MFA.',
+    description: 'You sign in manually each time the cookie expires.',
   },
   {
     name: 'None (public app, no auth)',
@@ -83,6 +90,9 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     }
     if (authModeFlag === 'custom') {
       return !!opts.customPath;
+    }
+    if (authModeFlag === 'cookie-jar') {
+      return !!opts.cookieJarPath;
     }
     // 'none' has no further required flags
     return true;
@@ -127,6 +137,15 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
           testPassword: opts.testPassword,
         };
         break;
+      case 'cookie-jar': {
+        const absPath = resolve(process.cwd(), opts.cookieJarPath!);
+        if (!existsSync(absPath)) {
+          log.fail(`--cookie-jar-path "${absPath}" does not exist.`);
+          return 1;
+        }
+        authMode = { kind: 'cookie-jar', path: absPath };
+        break;
+      }
       default:
         log.fail(`Unknown --auth-mode "${authModeFlag}". Valid: ${VALID_AUTH_MODES.join(', ')}.`);
         return 1;
@@ -139,7 +158,8 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
       opts.signInUrl ||
       opts.testEmail ||
       opts.testPassword ||
-      opts.customPath
+      opts.customPath ||
+      opts.cookieJarPath
     );
     if (partialFlags) {
       log.fail('Partial flags provided for non-interactive mode. Either pass all required or none.');
@@ -147,6 +167,7 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
       log.info('  --auth-mode ai-form also needs: --sign-in-url, --test-email, --test-password.');
       log.info('  --auth-mode interactive also needs: --sign-in-url.');
       log.info('  --auth-mode custom also needs: --custom-path. Optional: --test-email, --test-password.');
+      log.info('  --auth-mode cookie-jar also needs: --cookie-jar-path.');
       return 1;
     }
     if (opts.nonInteractive) {
@@ -250,6 +271,17 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
           testEmail,
           testPassword,
         };
+        break;
+      }
+      case 'cookie-jar': {
+        const jarPath = await input({
+          message: 'Path to the storageState JSON file (relative to this directory):',
+          validate: (v) => {
+            const abs = resolve(process.cwd(), v);
+            return existsSync(abs) ? true : `File does not exist: ${abs}`;
+          },
+        });
+        authMode = { kind: 'cookie-jar', path: resolve(process.cwd(), jarPath) };
         break;
       }
       default:

@@ -88,6 +88,7 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       page,
       stagehand: stagehandHandle.stagehand,
       liveViewUrl: session.liveViewUrl,
+      targetUrl: target.url,
       signal,
       nonInteractive: !!opts.nonInteractive,
     });

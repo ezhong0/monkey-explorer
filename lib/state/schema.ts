@@ -34,7 +34,48 @@ export const AuthModeSchema = z.discriminatedUnion('kind', [
     testEmail: z.string().email().optional(),
     testPassword: z.string().min(1).optional(),
   }),
+  z.object({
+    kind: z.literal('cookie-jar'),
+    // Absolute path to a Playwright storageState JSON file. Resolved at
+    // `target add` time. The file is read at every bootstrap-auth.
+    path: z.string().min(1),
+  }),
 ]);
+
+// ─── Playwright storageState shape ───
+//
+// Permissive (`.passthrough()`) so future Playwright versions adding fields
+// (priority, partitionKey, sourceScheme, etc.) don't break the loader.
+
+export const StorageStateCookieSchema = z
+  .object({
+    name: z.string(),
+    value: z.string(),
+    domain: z.string(),
+    path: z.string(),
+    expires: z.number(), // unix epoch seconds; -1 = session cookie
+    httpOnly: z.boolean(),
+    secure: z.boolean(),
+    sameSite: z.enum(['Lax', 'Strict', 'None']),
+  })
+  .passthrough();
+
+export const StorageStateOriginSchema = z.object({
+  origin: z.string().url(),
+  localStorage: z
+    .array(z.object({ name: z.string(), value: z.string() }))
+    .default([]),
+});
+
+export const StorageStateSchema = z
+  .object({
+    cookies: z.array(StorageStateCookieSchema).default([]),
+    origins: z.array(StorageStateOriginSchema).default([]),
+  })
+  .passthrough();
+
+export type StorageState = z.infer<typeof StorageStateSchema>;
+export type StorageStateCookie = z.infer<typeof StorageStateCookieSchema>;
 
 export const CapsSchema = z.object({
   wallClockMs: z.number().int().positive({

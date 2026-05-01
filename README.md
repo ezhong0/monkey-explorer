@@ -69,11 +69,50 @@ Picked during `monkey target add`:
 | Mode | When to use |
 |---|---|
 | **`ai-form`** | Email + password sign-in. Stagehand fills the form via natural language. Works for most password-form apps including Clerk's two-step flow. |
-| **`interactive`** | Anything that needs a human in the loop: magic link, OAuth (Google/GitHub/etc.), SSO redirects, MFA challenges, anti-bot CAPTCHAs. monkey prints a Browserbase live-view URL; you sign in manually once a week (or whenever the cookie expires). |
+| **`cookie-jar`** | OAuth (Google/GitHub/etc.), SSO, MFA, or anything where bot detection blocks Browserbase IPs. Sign in once in your real browser, export storage state to JSON, monkey injects on every bootstrap. **Recommended for OAuth-protected apps.** |
+| **`interactive`** | Last-resort human-in-the-loop. monkey prints a Browserbase live-view URL; you sign in manually each time the cookie expires. Slower, more fragile than cookie-jar. |
 | **`none`** | Public app, no auth. |
-| **`custom`** | Anything the AI form-fill can't handle. You provide a JS file with your own `signIn` function. See `examples/clerk-multistep-signin.mjs`. |
+| **`custom`** | Anything the above don't handle. You provide a JS file with your own `signIn` function. See `examples/clerk-multistep-signin.mjs`. |
 
 To change auth for a target: `monkey target rm <name>` then `monkey target add <name>`.
+
+### Cookie-jar mode — exporting cookies from your real browser
+
+For OAuth-protected apps, the cleanest path is to sign in once locally and import the resulting cookies + localStorage into monkey's Browserbase context.
+
+**Producing the JSON file** (any of these works — output is the same Playwright `storageState` shape):
+
+1. **Playwright record** (recommended if you have Playwright):
+   ```bash
+   # In a scratch directory:
+   npx playwright codegen --save-storage=auth.json https://app.example.com
+   ```
+   A real Chromium opens. Sign in normally — Google OAuth, MFA, all of it. Close the window. `auth.json` now contains your cookies + localStorage.
+
+2. **Browser extension** like [cookie-editor](https://chrome.google.com/webstore/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) — export to JSON, but verify the shape matches Playwright's (`{cookies: [...], origins: [...]}`).
+
+**Wiring it up:**
+
+```bash
+# Recommended: place the JSON in monkey's config dir (mode 0600 — it holds session credentials!)
+mkdir -p ~/.config/monkey-explorer/cookie-jars/
+mv auth.json ~/.config/monkey-explorer/cookie-jars/my-app.json
+chmod 0600 ~/.config/monkey-explorer/cookie-jars/my-app.json
+
+monkey target add my-app \
+  --url https://app.example.com \
+  --auth-mode cookie-jar \
+  --cookie-jar-path ~/.config/monkey-explorer/cookie-jars/my-app.json
+```
+
+monkey injects the cookies into a Browserbase context at bootstrap. Subsequent missions inherit them — no human-in-the-loop, no Google bot detection, no 5-min poll.
+
+**When cookies expire** (typically 1-4 weeks for Google session cookies): re-export from your real browser, replace the JSON, run `monkey bootstrap-auth --target my-app`. monkey detects stale cookies and tells you when it's time.
+
+**Security notes:**
+- The JSON contains live session cookies — treat it as sensitive (file mode 0600; don't commit to git; consider a private secret store).
+- monkey **filters injected cookies to your target's domain (eTLD+1)** so a `storageState` export that includes Google/GitHub/etc. cookies for unrelated sites doesn't leak them into the BB session. Only cookies matching your target's domain are injected.
+- The Browserbase context stores the cookies server-side. Anyone with access to your BB project can use them. If your BB account is shared, scope accordingly.
 
 ## Subcommands
 
@@ -113,13 +152,19 @@ monkey login \
   --browserbase-key "$BB_KEY" \
   --openai-key "$OPENAI_KEY"
 
-# Provision a target
+# Provision a target — ai-form
 monkey target add staging \
   --url https://app.example.com \
   --auth-mode ai-form \
   --sign-in-url https://app.example.com/sign-in \
   --test-email "$TEST_EMAIL" \
   --test-password "$TEST_PW"
+
+# Or — for OAuth-protected apps, use cookie-jar mode (export from local browser first):
+monkey target add staging \
+  --url https://app.example.com \
+  --auth-mode cookie-jar \
+  --cookie-jar-path "$HOME/.config/monkey-explorer/cookie-jars/staging.json"
 
 # Run with structured output
 monkey --json --non-interactive "test the signup flow"

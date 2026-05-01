@@ -13,12 +13,15 @@ import { aiFormSignIn } from './aiForm.js';
 import { interactiveSignIn } from './interactive.js';
 import { noneSignIn } from './none.js';
 import { customSignIn } from './custom.js';
+import { cookieJarSignIn } from './cookieJar.js';
 
 export async function dispatchSignIn(opts: {
   authMode: AuthMode;
   page: Page;
   stagehand: Stagehand;
   liveViewUrl: string;
+  /** Used by cookie-jar mode to filter injected cookies to target's eTLD+1. */
+  targetUrl: string;
   signal: AbortSignal;
   nonInteractive: boolean;
 }): Promise<void> {
@@ -51,6 +54,14 @@ export async function dispatchSignIn(opts: {
         customSignInPath: opts.authMode.path,
         signal: opts.signal,
         nonInteractive: opts.nonInteractive,
+      });
+    case 'cookie-jar':
+      return cookieJarSignIn({
+        page: opts.page,
+        stagehand: opts.stagehand,
+        jarPath: opts.authMode.path,
+        targetUrl: opts.targetUrl,
+        signal: opts.signal,
       });
     default: {
       const _: never = opts.authMode;

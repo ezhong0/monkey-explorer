@@ -41,6 +41,7 @@ interface Argv {
   'test-email'?: string;
   'test-password'?: string;
   'custom-path'?: string;
+  'cookie-jar-path'?: string;
   'no-bootstrap'?: boolean;
 }
 
@@ -59,6 +60,7 @@ function parseArgs(argv: string[]): Argv {
       'test-email',
       'test-password',
       'custom-path',
+      'cookie-jar-path',
     ],
     boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive', 'no-bootstrap'],
     alias: { h: 'help', v: 'version' },
@@ -77,7 +79,8 @@ Subcommands:
                          --anthropic-key (all-or-nothing for non-interactive).
   target add <name>    Add a named target (URL, auth, test creds).
                          Flags: --url, --auth-mode, --sign-in-url, --test-email,
-                         --test-password, --custom-path, --no-bootstrap.
+                         --test-password, --custom-path, --cookie-jar-path,
+                         --no-bootstrap.
   target list          Show all targets, * marks current.
   target use <name>    Switch the current target.
   target rm <name>     Delete a target.
@@ -162,13 +165,16 @@ Usage:
 
 Required flags for non-interactive:
   --url <app-url>           The app to test (e.g., https://app.example.com)
-  --auth-mode <kind>        ai-form | interactive | none | custom
+  --auth-mode <kind>        ai-form | interactive | none | custom | cookie-jar
 
 Auth-mode-specific flags:
   ai-form        Requires --sign-in-url, --test-email, --test-password
   interactive    Requires --sign-in-url
   none           No further flags
   custom         Requires --custom-path (resolved to absolute at this step)
+                 Optional: --test-email, --test-password (passed to your signIn fn)
+  cookie-jar     Requires --cookie-jar-path (Playwright storageState JSON;
+                 resolved to absolute; injected into BB context at bootstrap)
 
 Other flags:
   --no-bootstrap            Skip the auto bootstrap-auth at the end. Run
@@ -332,6 +338,7 @@ async function main(argv: string[]): Promise<number> {
             testEmail: args['test-email'],
             testPassword: args['test-password'],
             customPath: args['custom-path'],
+            cookieJarPath: args['cookie-jar-path'],
             noBootstrap: args['no-bootstrap'],
           },
         });

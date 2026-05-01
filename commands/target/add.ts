@@ -32,32 +32,22 @@ export interface TargetAddOpts {
   nonInteractive?: boolean;
 }
 
-const VALID_AUTH_MODES = ['ai-form', 'interactive', 'none', 'custom', 'cookie-jar'] as const;
+const VALID_AUTH_MODES = ['password', 'cookie-jar', 'none'] as const;
 
 const AUTH_MODE_CHOICES = [
   {
-    name: 'Email + password (AI-driven form fill)',
-    value: 'ai-form' as const,
-    description: 'Stagehand fills the sign-in form for you. Works for most password-form apps.',
+    name: 'Password (AI-driven form fill)',
+    value: 'password' as const,
+    description: 'Email + password. Stagehand fills the sign-in form. Works for Clerk, Auth0, plain HTML forms.',
   },
   {
     name: 'Cookie jar (import storageState from your real browser)',
     value: 'cookie-jar' as const,
-    description: 'For Google OAuth / SSO / MFA. Sign in once locally, export storageState JSON, monkey injects.',
-  },
-  {
-    name: 'Interactive (sign in via Browserbase live view)',
-    value: 'interactive' as const,
-    description: 'You sign in manually each time the cookie expires.',
+    description: 'For Google OAuth / SSO / MFA. Sign in once locally with `monkey export-cookies`, monkey injects.',
   },
   {
     name: 'None (public app, no auth)',
     value: 'none' as const,
-  },
-  {
-    name: 'Custom (point at your own signIn JS file)',
-    value: 'custom' as const,
-    description: 'For unusual flows. The framework will prompt for trust on first use.',
   },
 ];
 
@@ -82,14 +72,8 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
   const allFlagsForNonInteractive = (() => {
     if (!opts.url || !authModeFlag) return false;
     if (!VALID_AUTH_MODES.includes(authModeFlag as (typeof VALID_AUTH_MODES)[number])) return false;
-    if (authModeFlag === 'ai-form') {
+    if (authModeFlag === 'password') {
       return !!(opts.signInUrl && opts.testEmail && opts.testPassword);
-    }
-    if (authModeFlag === 'interactive') {
-      return !!opts.signInUrl;
-    }
-    if (authModeFlag === 'custom') {
-      return !!opts.customPath;
     }
     if (authModeFlag === 'cookie-jar') {
       return !!opts.cookieJarPath;
@@ -111,31 +95,16 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     }
 
     switch (authModeFlag) {
-      case 'ai-form':
+      case 'password':
         authMode = {
-          kind: 'ai-form',
+          kind: 'password',
           signInUrl: opts.signInUrl!,
           testEmail: opts.testEmail!,
           testPassword: opts.testPassword!,
         };
         break;
-      case 'interactive':
-        authMode = { kind: 'interactive', signInUrl: opts.signInUrl! };
-        break;
       case 'none':
         authMode = { kind: 'none' };
-        break;
-      case 'custom':
-        // Resolve to absolute now so the path is unambiguous regardless of
-        // the cwd at later runs.
-        authMode = {
-          kind: 'custom',
-          path: resolve(process.cwd(), opts.customPath!),
-          // testEmail / testPassword are optional for custom — pass through
-          // if provided.
-          testEmail: opts.testEmail,
-          testPassword: opts.testPassword,
-        };
         break;
       case 'cookie-jar': {
         const absPath = resolve(process.cwd(), opts.cookieJarPath!);
@@ -164,9 +133,7 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     if (partialFlags) {
       log.fail('Partial flags provided for non-interactive mode. Either pass all required or none.');
       log.info('  Required: --url, --auth-mode.');
-      log.info('  --auth-mode ai-form also needs: --sign-in-url, --test-email, --test-password.');
-      log.info('  --auth-mode interactive also needs: --sign-in-url.');
-      log.info('  --auth-mode custom also needs: --custom-path. Optional: --test-email, --test-password.');
+      log.info('  --auth-mode password also needs: --sign-in-url, --test-email, --test-password.');
       log.info('  --auth-mode cookie-jar also needs: --cookie-jar-path.');
       return 1;
     }
@@ -195,11 +162,11 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     const authKind = await select({
       message: 'Auth type:',
       choices: AUTH_MODE_CHOICES,
-      default: 'ai-form',
+      default: 'password',
     });
 
     switch (authKind) {
-      case 'ai-form': {
+      case 'password': {
         const signInUrl = await input({
           message: 'Sign-in URL:',
           validate: (v) => {
@@ -219,60 +186,12 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
           message: 'Test user password:',
           mask: '*',
         });
-        authMode = { kind: 'ai-form', signInUrl, testEmail, testPassword };
-        break;
-      }
-      case 'interactive': {
-        const signInUrl = await input({
-          message: 'Sign-in URL:',
-          validate: (v) => {
-            try {
-              new URL(v);
-              return true;
-            } catch {
-              return 'Must be a valid URL';
-            }
-          },
-        });
-        authMode = { kind: 'interactive', signInUrl };
+        authMode = { kind: 'password', signInUrl, testEmail, testPassword };
         break;
       }
       case 'none':
         authMode = { kind: 'none' };
         break;
-      case 'custom': {
-        const customPath = await input({
-          message: 'Path to your signIn JS file (relative to this directory):',
-          default: './signin.mjs',
-        });
-        const wantsCreds = await select({
-          message: 'Does your custom signIn need test credentials?',
-          choices: [
-            { name: 'No', value: 'no' as const },
-            { name: 'Yes — provide email + password', value: 'yes' as const },
-          ],
-          default: 'no',
-        });
-        let testEmail: string | undefined;
-        let testPassword: string | undefined;
-        if (wantsCreds === 'yes') {
-          testEmail = await input({
-            message: 'Test user email:',
-            validate: (v) => (/^.+@.+\..+$/.test(v) ? true : 'Must be a valid email'),
-          });
-          testPassword = await password({
-            message: 'Test user password:',
-            mask: '*',
-          });
-        }
-        authMode = {
-          kind: 'custom',
-          path: resolve(process.cwd(), customPath),
-          testEmail,
-          testPassword,
-        };
-        break;
-      }
       case 'cookie-jar': {
         const jarPath = await input({
           message: 'Path to the storageState JSON file (relative to this directory):',

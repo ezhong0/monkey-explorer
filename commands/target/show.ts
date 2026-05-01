@@ -22,17 +22,10 @@ export async function runTargetShow(name: string | undefined): Promise<number> {
   out.out(`url:            ${target.url}`);
   out.out(`authMode:       ${target.authMode.kind}`);
 
-  // testEmail / testPassword now live inside AuthMode variants (v2 schema).
   let testEmail: string | undefined;
   let testPasswordSet = false;
-  if (target.authMode.kind === 'ai-form') {
+  if (target.authMode.kind === 'password') {
     out.out(`signInUrl:      ${target.authMode.signInUrl}`);
-    testEmail = target.authMode.testEmail;
-    testPasswordSet = !!target.authMode.testPassword;
-  } else if (target.authMode.kind === 'interactive') {
-    out.out(`signInUrl:      ${target.authMode.signInUrl}`);
-  } else if (target.authMode.kind === 'custom') {
-    out.out(`customPath:     ${target.authMode.path}`);
     testEmail = target.authMode.testEmail;
     testPasswordSet = !!target.authMode.testPassword;
   } else if (target.authMode.kind === 'cookie-jar') {

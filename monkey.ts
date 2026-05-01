@@ -28,6 +28,7 @@ interface Argv {
   help?: boolean;
   version?: boolean;
   json?: boolean;
+  'include-speculative'?: boolean;
   'non-interactive'?: boolean;
   // login flags
   'browserbase-key'?: string;
@@ -65,7 +66,7 @@ function parseArgs(argv: string[]): Argv {
       'cookie-jar-path',
       'out',
     ],
-    boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive', 'skip-bootstrap'],
+    boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap'],
     alias: { h: 'help', v: 'version' },
   }) as Argv;
 }
@@ -81,9 +82,10 @@ Subcommands:
                          Flags: --browserbase-key, --openai-key, --bb-project,
                          --anthropic-key (all-or-nothing for non-interactive).
   target add <name>    Add a named target (URL, auth, test creds).
-                         Flags: --url, --auth-mode, --sign-in-url, --test-email,
-                         --test-password, --custom-path, --cookie-jar-path,
-                         --skip-bootstrap.
+                         --auth-mode: password | cookie-jar | none
+                         password: --sign-in-url, --test-email, --test-password
+                         cookie-jar: --cookie-jar-path
+                         Flags: --skip-bootstrap.
   target list          Show all targets, * marks current.
   target use <name>    Switch the current target.
   target rm <name>     Delete a target.
@@ -98,13 +100,15 @@ Subcommands:
                          Flags: --target <name>, --since <duration> (1h/7d/30m).
 
 Run flags:
-  --target <name>      Run against a specific named target (default: current).
-  --json               Emit final aggregate JSON to stdout (for scripts/agents).
-                       Streaming progress still goes to stderr.
-  --non-interactive    Error instead of prompting (CI/agents).
-  --dry-run            Print plan without spawning sessions.
-  --help, -h           This message.
-  --version, -v        Print framework version.
+  --target <name>           Run against a specific named target (default: current).
+  --json                    Emit final aggregate JSON to stdout (for scripts/agents).
+                            Streaming progress still goes to stderr.
+  --include-speculative     Surface speculative-tier findings in the report
+                            and JSON. Off by default — verified findings only.
+  --non-interactive         Error instead of prompting (CI/agents).
+  --dry-run                 Print plan without spawning sessions.
+  --help, -h                This message.
+  --version, -v             Print framework version.
 
 Examples:
   monkey login
@@ -170,16 +174,16 @@ Usage:
 
 Required flags for non-interactive:
   --url <app-url>           The app to test (e.g., https://app.example.com)
-  --auth-mode <kind>        ai-form | interactive | none | custom | cookie-jar
+  --auth-mode <kind>        password | cookie-jar | none
 
 Auth-mode-specific flags:
-  ai-form        Requires --sign-in-url, --test-email, --test-password
-  interactive    Requires --sign-in-url
-  none           No further flags
-  custom         Requires --custom-path (resolved to absolute at this step)
-                 Optional: --test-email, --test-password (passed to your signIn fn)
+  password       Requires --sign-in-url, --test-email, --test-password.
+                 Stagehand AI-fills the form. Works for Clerk, Auth0, plain HTML.
+  none           No further flags. Public app, no auth.
   cookie-jar     Requires --cookie-jar-path (Playwright storageState JSON;
-                 resolved to absolute; injected into BB context at bootstrap)
+                 resolved to absolute; injected into BB context at bootstrap).
+                 Use this for Google OAuth / SSO / MFA. Sign in once locally
+                 with \`monkey export-cookies <name>\`.
 
 Other flags:
   --skip-bootstrap            Skip the auto bootstrap-auth at the end. Run
@@ -416,6 +420,7 @@ async function main(argv: string[]): Promise<number> {
           positionalMissions,
           dryRun: Boolean(args['dry-run']),
           json: Boolean(args.json),
+          includeSpeculative: Boolean(args['include-speculative']),
           nonInteractive: Boolean(args['non-interactive']),
         });
       }

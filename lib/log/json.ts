@@ -4,17 +4,25 @@
 // Schema is intended to be stable. If we ever break it, bump the
 // `monkey_version` field and document the change.
 
-import type { MissionResult, RunStatus } from '../types.js';
+import type { Finding, MissionResult, RunStatus } from '../types.js';
+
+export type Verdict = 'pass' | 'fail' | 'inconclusive';
 
 export interface JsonOutputMission {
   mission: string;
   target: string;
   status: string;
+  /** PASS / FAIL / INCONCLUSIVE — Claude Code's primary signal. Derived
+   *  from verified findings: any critical/high → fail; zero verified → pass;
+   *  otherwise inconclusive. Mission-level errors (timeout, errored,
+   *  not_started) → fail. */
+  verdict: Verdict;
   ranForMs: number | null;
   startedAt: string;
   finishedAt: string;
-  findings: unknown[];
-  findingsCount: number;
+  findings: Finding[];                  // verified-tier only by default
+  findingsCount: number;                // count of verified
+  speculativeFindings?: Finding[];      // present only when --include-speculative
   consoleErrors: unknown[];
   networkFailures: unknown[];
   tokensUsed: number | null;
@@ -32,6 +40,9 @@ export interface JsonOutput {
     total: number;
     completed: number;
     failed: number;
+    /** Top-level verdict across all missions: PASS iff every mission is PASS,
+     *  FAIL if any mission is FAIL, INCONCLUSIVE otherwise. */
+    verdict: Verdict;
     findingsTotal: number;
     consoleErrorsTotal: number;
     networkFailuresTotal: number;
@@ -43,15 +54,19 @@ export function buildJsonOutput(opts: {
   monkeyVersion: string;
   results: MissionResult[];
   walledMs: number;
+  /** When true, emit speculative findings alongside verified in the
+   *  speculativeFindings field. Default: hide them entirely. */
+  includeSpeculative?: boolean;
 }): JsonOutput {
-  const missions = opts.results.map(toJsonMission);
+  const missions = opts.results.map((r) => toJsonMission(r, opts.includeSpeculative ?? false));
   return {
     monkey_version: opts.monkeyVersion,
     missions,
     summary: {
       total: missions.length,
       completed: missions.filter((m) => m.status === 'completed').length,
-      failed: missions.filter((m) => m.status !== 'completed').length,
+      failed: missions.filter((m) => m.verdict === 'fail').length,
+      verdict: aggregateVerdict(missions.map((m) => m.verdict)),
       findingsTotal: missions.reduce((sum, m) => sum + m.findingsCount, 0),
       consoleErrorsTotal: missions.reduce((sum, m) => sum + m.consoleErrors.length, 0),
       networkFailuresTotal: missions.reduce((sum, m) => sum + m.networkFailures.length, 0),
@@ -60,18 +75,52 @@ export function buildJsonOutput(opts: {
   };
 }
 
-function toJsonMission(r: MissionResult): JsonOutputMission {
+function aggregateVerdict(verdicts: Verdict[]): Verdict {
+  if (verdicts.some((v) => v === 'fail')) return 'fail';
+  if (verdicts.every((v) => v === 'pass')) return 'pass';
+  return 'inconclusive';
+}
+
+/** Per-mission verdict from the run's status + verified findings. */
+function deriveVerdict(status: RunStatus, verifiedFindings: Finding[]): Verdict {
+  // Mission-level failures (didn't complete cleanly) → fail
+  if (
+    status.kind === 'errored' ||
+    status.kind === 'extract_failed' ||
+    status.kind === 'not_started' ||
+    status.kind === 'aborted' ||
+    status.kind === 'timed_out' ||
+    status.kind === 'exceeded_tokens'
+  ) {
+    return 'fail';
+  }
+  // Adjudicator failed but lifter findings shipped → use those
+  // (already in verifiedFindings); falls through to verdict-from-findings
+  const hasSerious = verifiedFindings.some(
+    (f) => f.severity === 'critical' || f.severity === 'high',
+  );
+  if (hasSerious) return 'fail';
+  if (verifiedFindings.length === 0) return 'pass';
+  // medium/low/observation only → inconclusive (worth a look, not a blocker)
+  return 'inconclusive';
+}
+
+function toJsonMission(r: MissionResult, includeSpeculative: boolean): JsonOutputMission {
   const ranForMs = ranForMsOf(r.status);
-  const findings = findingsOf(r.status);
+  const allFindings = findingsOf(r.status);
+  const verified = allFindings.filter((f) => f.tier !== 'speculative');
+  const speculative = allFindings.filter((f) => f.tier === 'speculative');
   return {
     mission: r.mission,
     target: r.target,
     status: r.status.kind,
+    verdict: deriveVerdict(r.status, verified),
     ranForMs,
     startedAt: r.startedAt,
     finishedAt: r.finishedAt,
-    findings,
-    findingsCount: findings.length,
+    findings: verified,
+    findingsCount: verified.length,
+    ...(includeSpeculative ? { speculativeFindings: speculative } : {}),
     consoleErrors: r.consoleErrors,
     networkFailures: r.networkFailures,
     tokensUsed: tokensOf(r.status),
@@ -87,7 +136,7 @@ function ranForMsOf(s: RunStatus): number | null {
   if ('ranForMs' in s) return s.ranForMs;
   return null;
 }
-function findingsOf(s: RunStatus): unknown[] {
+function findingsOf(s: RunStatus): Finding[] {
   if ('findings' in s) return s.findings;
   return [];
 }

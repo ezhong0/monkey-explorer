@@ -72,8 +72,21 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
     );
   }
 
-  // Filter to target's eTLD+1 — Red Team finding: avoid leaking unrelated
-  // session credentials into the BB context.
+  // Filter to target's eTLD+1 PLUS known auth-provider domains. Red Team
+  // finding: avoid leaking unrelated session credentials into the BB context.
+  // But the strict eTLD+1 filter strips Vercel preview-bypass cookies
+  // (vercel.live), Clerk-hosted sessions (clerk.accounts.dev), and Google
+  // OAuth state (accounts.google.com) — without those, multi-domain auth
+  // (Google OAuth, Vercel previews) silently fails after the app's own
+  // session JWT expires (~1h for Clerk).
+  const AUTH_PROVIDER_ETLDS_PLUS_1 = [
+    'clerk.accounts.dev',  // Clerk-hosted session cookies (Auth0-style provider)
+    'vercel.live',         // Vercel preview-deploy bypass cookies
+    'accounts.google.com', // Google OAuth state
+    'auth0.com',           // Auth0-hosted sessions
+    'okta.com',            // Okta-hosted sessions
+  ];
+
   const targetHost = (() => {
     try {
       return new URL(opts.targetUrl).hostname;
@@ -83,13 +96,19 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
   })();
   const targetEtldPlus1 = etldPlus1(targetHost);
 
-  const matchingCookies = liveCookies.filter((c) => {
-    const cookieHost = c.domain.replace(/^\./, '');
-    return cookieHost === targetEtldPlus1 || cookieHost.endsWith(`.${targetEtldPlus1}`);
-  });
+  const allowedEtlds = new Set([targetEtldPlus1, ...AUTH_PROVIDER_ETLDS_PLUS_1]);
+  const matchesAllowed = (host: string): boolean => {
+    const bare = host.replace(/^\./, '');
+    for (const allowed of allowedEtlds) {
+      if (bare === allowed || bare.endsWith(`.${allowed}`)) return true;
+    }
+    return false;
+  };
+
+  const matchingCookies = liveCookies.filter((c) => matchesAllowed(c.domain));
   const matchingOrigins = jar.origins.filter((o) => {
     try {
-      return etldPlus1(new URL(o.origin).hostname) === targetEtldPlus1;
+      return matchesAllowed(new URL(o.origin).hostname);
     } catch {
       return false;
     }

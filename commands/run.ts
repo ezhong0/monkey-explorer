@@ -30,6 +30,9 @@ export interface RunOpts {
   positionalMissions: string[];
   dryRun: boolean;
   json: boolean;
+  /** When true, include speculative-tier findings in report + JSON.
+   *  Default: hide them entirely (only verified findings surface). */
+  includeSpeculative: boolean;
   nonInteractive: boolean;
 }
 
@@ -94,7 +97,14 @@ export async function runRun(opts: RunOpts): Promise<number> {
     log.info('--dry-run: not spawning sessions.');
     if (opts.json) {
       const version = await readPackageVersion();
-      emitJson(buildJsonOutput({ monkeyVersion: version, results: [], walledMs: 0 }));
+      emitJson(
+        buildJsonOutput({
+          monkeyVersion: version,
+          results: [],
+          walledMs: 0,
+          includeSpeculative: opts.includeSpeculative,
+        }),
+      );
     }
     return 0;
   }
@@ -163,7 +173,14 @@ export async function runRun(opts: RunOpts): Promise<number> {
     const version = await readPackageVersion();
     // Restore stdout so emitJson writes to the real channel, not stderr.
     if (restoreStdout) restoreStdout();
-    emitJson(buildJsonOutput({ monkeyVersion: version, results, walledMs }));
+    emitJson(
+      buildJsonOutput({
+        monkeyVersion: version,
+        results,
+        walledMs,
+        includeSpeculative: opts.includeSpeculative,
+      }),
+    );
   } else {
     printSummary(results, walledMs);
     const cascade = summarizeCascadingFailures(results);

@@ -87,11 +87,9 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       authMode: target.authMode,
       page,
       stagehand: stagehandHandle.stagehand,
-      liveViewUrl: session.liveViewUrl,
       targetUrl: target.url,
       targetName: name,
       signal,
-      nonInteractive: !!opts.nonInteractive,
     });
 
     const signedIn = await isSignedIn({ page, stagehand: stagehandHandle.stagehand });
@@ -102,6 +100,14 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       log.warn(
         'Sign-in flow completed but post-check says "not signed in". Cookie may not have persisted.',
       );
+      if (target.authMode.kind === 'cookie-jar') {
+        log.info(
+          `  Cookies in the jar may have aged out (auth-provider session JWTs typically expire in ~1h).`,
+        );
+        log.info(
+          `  Re-export with:  monkey export-cookies ${name}`,
+        );
+      }
     } else {
       log.warn('Could not confirm signed-in state. Inspect the replay if needed.');
       log.info(`  Replay: ${session.replayUrl}`);
@@ -126,6 +132,9 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
     log.ok(`Ready. Subsequent runs against "${name}" will reuse this context.`);
   } else {
     log.warn(`Bootstrap completed but sign-in could not be confirmed. The next run may auto-reauth.`);
+    if (target.authMode.kind === 'cookie-jar') {
+      log.info(`  If auto-reauth keeps failing: monkey export-cookies ${name}`);
+    }
   }
   return 0;
 }

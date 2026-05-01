@@ -1,15 +1,17 @@
-// "ai-form" auth mode — Stagehand `act()`-driven form fill. Works for
-// the majority of password-form apps (including Clerk's two-step flow)
-// without per-app configuration.
+// "password" auth mode — Stagehand `act()`-driven form fill.
 //
-// If form-fill repeatedly fails for an app, the user falls back to
-// `custom` auth mode (their own JS file).
+// Works for the majority of password-form apps (Clerk two-step flow,
+// Auth0, plain HTML forms). The AI act() call adapts to whatever shape
+// the sign-in form takes without per-app configuration.
+//
+// If form-fill repeatedly fails for a specific app, fall back to
+// `cookie-jar` mode (export storageState from your real Chrome).
 
 import type { Page } from 'playwright-core';
 import type { Stagehand } from '@browserbasehq/stagehand';
 import { aiSignIn } from '../stagehand/actSignIn.js';
 
-export async function aiFormSignIn(opts: {
+export async function passwordSignIn(opts: {
   stagehand: Stagehand;
   page: Page;
   signInUrl: string;

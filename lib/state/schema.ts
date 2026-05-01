@@ -6,33 +6,27 @@
 
 import { z } from 'zod';
 
-// ─── AuthMode discriminated union (v2 schema) ───
+// ─── AuthMode discriminated union (v3 schema) ───
 //
-// v2 change: testEmail + testPassword moved from Target.testCredentials into
-// the AuthMode variants that need them. ai-form REQUIRES them by construction.
-// custom MAY optionally have them (passed through to the user's signIn fn).
-// interactive and none don't carry creds at all. This eliminates the
-// asymmetric-handling bug that was possible in v1.
+// v3 change: collapsed to three modes — password (was ai-form), cookie-jar,
+// none. interactive (BB live-view manual sign-in) and custom (user-provided
+// JS file) were removed: interactive was fragile against bot-detection on
+// data-center IPs, and custom was power-user-tier complexity not justified
+// for the MVP.
+//
+// Legacy `ai-form` is auto-renamed to `password` by the preprocessor below.
+// Legacy `interactive` and `custom` targets fail loud — user must migrate
+// (typically to `cookie-jar` for OAuth or `password` for forms).
 
-export const AuthModeSchema = z.discriminatedUnion('kind', [
+const RawAuthModeSchema = z.discriminatedUnion('kind', [
   z.object({
-    kind: z.literal('ai-form'),
+    kind: z.literal('password'),
     signInUrl: z.string().url(),
     testEmail: z.string().email(),
     testPassword: z.string().min(1),
   }),
   z.object({
-    kind: z.literal('interactive'),
-    signInUrl: z.string().url(),
-  }),
-  z.object({
     kind: z.literal('none'),
-  }),
-  z.object({
-    kind: z.literal('custom'),
-    path: z.string().min(1),
-    testEmail: z.string().email().optional(),
-    testPassword: z.string().min(1).optional(),
   }),
   z.object({
     kind: z.literal('cookie-jar'),
@@ -41,6 +35,8 @@ export const AuthModeSchema = z.discriminatedUnion('kind', [
     path: z.string().min(1),
   }),
 ]);
+
+export const AuthModeSchema = RawAuthModeSchema;
 
 // ─── Playwright storageState shape ───
 //
@@ -173,7 +169,7 @@ export const DEFAULT_DEFAULTS: Defaults = {
   caps: DEFAULT_CAPS,
 };
 
-export const CURRENT_SCHEMA_VERSION = 2 as const;
+export const CURRENT_SCHEMA_VERSION = 3 as const;
 
 // ─── Empty state factory ───
 

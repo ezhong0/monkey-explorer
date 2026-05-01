@@ -95,12 +95,12 @@ export function renderTerminalReport(opts: {
 
   lines.push('');
 
-  // Findings section. Verified shown by default; speculative folded into a
-  // sub-section. Verified findings carry oracle-backed evidence
-  // (console / network / dom / diff); speculative findings are LLM-judgment
-  // claims that didn't cross-reference cleanly against the trace.
+  // Findings section. Speculative findings (LLM judgments without oracle-
+  // backed evidence) are filtered out of the human-readable section by
+  // default — they're still in the "Findings (raw)" JSON block at the
+  // bottom for completeness, and surfaceable via --include-speculative.
   const verified = findings.filter((f) => f.tier !== 'speculative');
-  const speculative = findings.filter((f) => f.tier === 'speculative');
+  const speculativeCount = findings.length - verified.length;
 
   if (verified.length > 0) {
     lines.push('## Findings');
@@ -121,30 +121,23 @@ export function renderTerminalReport(opts: {
       }
       lines.push('');
     });
+    if (speculativeCount > 0) {
+      lines.push(
+        `_(${speculativeCount} additional speculative finding${speculativeCount === 1 ? '' : 's'} hidden — pass \`--include-speculative\` to surface.)_`,
+      );
+      lines.push('');
+    }
   } else if (status.kind === 'completed' || status.kind === 'adjudicator_failed') {
     lines.push('## Findings');
     lines.push('');
-    lines.push('_No verified findings._');
+    if (speculativeCount > 0) {
+      lines.push(
+        `_No verified findings. ${speculativeCount} speculative finding${speculativeCount === 1 ? '' : 's'} hidden — pass \`--include-speculative\` to surface._`,
+      );
+    } else {
+      lines.push('_No findings._');
+    }
     lines.push('');
-  }
-
-  if (speculative.length > 0) {
-    lines.push('## Speculative findings');
-    lines.push('');
-    lines.push(
-      `_${speculative.length} finding${speculative.length === 1 ? '' : 's'} the adjudicator emitted but couldn't tie to oracle-backed evidence (no console/network/diff citation, or citation didn't cross-reference). Treat as informational; verify before acting._`,
-    );
-    lines.push('');
-    speculative.forEach((f, i) => {
-      lines.push(`### S${i + 1}. ${SEVERITY_BADGE[f.severity] ?? f.severity} — ${f.summary}`);
-      lines.push('');
-      lines.push(f.details);
-      if (f.validation_failed) {
-        lines.push('');
-        lines.push(`_Why speculative:_ ${f.validation_failed}`);
-      }
-      lines.push('');
-    });
   }
 
   // Embedded findings JSON (machine-readable for re-render)

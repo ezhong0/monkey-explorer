@@ -84,6 +84,7 @@ monkey target list                     # show all targets, * marks current
 monkey target use <name>               # switch current target
 monkey target rm <name>                # delete a target
 monkey target show [<name>]            # show target details (secrets redacted)
+monkey current                         # print current target (one line: name url auth status)
 monkey configure                       # edit defaults (models, caps)
 monkey bootstrap-auth [--target <n>]   # refresh BB context cookie
 
@@ -99,6 +100,8 @@ monkey list --since 7d                 # custom time window (default 24h)
 
 monkey --help / --version
 ```
+
+> **Per-subcommand help:** `monkey <subcommand> --help` (e.g., `monkey login --help`, `monkey target add --help`) prints flag-level details for each command.
 
 ## Non-interactive (CI / agents)
 
@@ -134,13 +137,15 @@ Shows active and recent runs across all targets, sorted by time. Reports live in
 $ monkey list
 
 ACTIVE (2):
-  tamarind-staging    [1m 23s]  test the dashboard
-  prod                [0m 45s]  test the settings page
+  TARGET               DURATION   MISSION   LIVE-VIEW
+  tamarind-staging     [1m 23s]   test the dashboard           https://...
+  prod                 [0m 45s]   test the settings page       https://...
 
-RECENT (past 24h):
-  20:15  ✓  tamarind-staging  test mobile responsiveness  4m 22s  3 findings
-  19:42  ✓  tamarind-staging  list sidebar nav items      2m 14s  8 findings
-  19:09  ✗  prod              test job submission         0m 30s  errored
+RECENT (3):
+  TIME       TARGET               MISSION   DURATION  FINDINGS      REPLAY
+  20:15  ✓  tamarind-staging     test mobile responsiveness  4m 22s    3 findings    https://...
+  19:42  ✓  tamarind-staging     list sidebar nav items      2m 14s    8 findings    https://...
+  19:09  ✗  prod                 test job submission         0m 30s                  https://...
 ```
 
 In a TTY: arrow keys + enter to drill into a report. Piped: static text, greppable.

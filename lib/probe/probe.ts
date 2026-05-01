@@ -12,6 +12,8 @@ export async function probe(opts: {
   page: Page;
   stagehand: Stagehand;
   target: string;
+  /** When 'none', skips the auth marker check — there's no auth to verify. */
+  authModeKind?: string;
 }): Promise<ProbeResult> {
   // Stage 1: HTTP reachability via fetch (fast, no browser overhead).
   try {
@@ -27,7 +29,7 @@ export async function probe(opts: {
     return { kind: 'unreachable', details: `network: ${(e as Error).message}` };
   }
 
-  // Stage 2: navigate the actual session, check auth state.
+  // Stage 2: navigate the actual session.
   try {
     await opts.page.goto(opts.target, {
       waitUntil: 'domcontentloaded',
@@ -36,6 +38,9 @@ export async function probe(opts: {
   } catch (e) {
     return { kind: 'unknown', details: `navigation failed: ${(e as Error).message}` };
   }
+
+  // Stage 3: auth state — skipped for auth-mode=none targets (no auth to check).
+  if (opts.authModeKind === 'none') return { kind: 'ok' };
 
   const signedIn = await isSignedIn({ page: opts.page, stagehand: opts.stagehand });
 

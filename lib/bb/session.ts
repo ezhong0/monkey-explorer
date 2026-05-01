@@ -33,11 +33,13 @@ export async function createSession(opts: {
 }): Promise<MonkeySession> {
   // BB SDK type def lags the API: userMetadata is accepted at runtime
   // (verified Phase 0 spike) but not in SessionCreateParams type. Cast.
+  // contextId is empty for auth-mode=none targets (no bootstrap creates one);
+  // skip the context block in that case so BB doesn't reject "Invalid uuid".
   const session = await opts.bb.sessions.create({
     projectId: opts.projectId,
-    browserSettings: {
-      context: { id: opts.contextId, persist: true },
-    },
+    ...(opts.contextId
+      ? { browserSettings: { context: { id: opts.contextId, persist: true } } }
+      : {}),
     timeout: opts.sessionTimeoutSec,
     userMetadata: {
       monkey: 'true',

@@ -144,13 +144,13 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   // Probe → maybe re-auth.
   try {
     const page = await stagehandHandle.page();
-    let probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url });
+    let probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url, authModeKind: opts.authMode.kind });
 
     if (probeResult.kind === 'sign-in-page') {
       log.fail(`${prefix} Auth expired. Re-authenticating…`);
       await opts.onReauthNeeded(); // refreshes BB context cookie
       // After re-auth, the session's cookie may need a re-navigation.
-      probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url });
+      probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url, authModeKind: opts.authMode.kind });
     }
 
     if (probeResult.kind !== 'ok') {

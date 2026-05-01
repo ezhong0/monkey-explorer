@@ -132,6 +132,10 @@ export interface MissionResult {
   mission: string;
   target: string;
   status: RunStatus;
+  /** PASS / FAIL / INCONCLUSIVE — locked at mission-terminal time so it
+   *  can't drift if findings get post-processed later (sanitization,
+   *  replay, etc.). Computed via lib/runner/verdict.ts. */
+  verdict: 'pass' | 'fail' | 'inconclusive';
   sessionId: string | null;
   replayUrl: string | null;
   startedAt: string;

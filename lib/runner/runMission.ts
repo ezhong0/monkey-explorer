@@ -27,6 +27,7 @@ import { pickModelApiKey } from '../stagehand/modelKey.js';
 import { buildTrace } from '../trace/build.js';
 import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
+import { deriveVerdict } from './verdict.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
   AdjudicatorErrorKind,
@@ -413,12 +414,14 @@ async function finalize(
     await ctx.session.close();
   }
 
+  const verifiedForVerdict = ctx.findings.filter((f) => f.tier !== 'speculative');
   return {
     index: opts.index,
     total: opts.total,
     mission: opts.mission,
     target: opts.target.url,
     status: ctx.status,
+    verdict: deriveVerdict(ctx.status, verifiedForVerdict),
     sessionId: sessionId || null,
     replayUrl: replayUrl || null,
     startedAt: ctx.startedAt.toISOString(),
@@ -469,6 +472,7 @@ async function writeNotStartedReport(
     mission: opts.mission,
     target: opts.target.url,
     status,
+    verdict: deriveVerdict(status, []),
     sessionId: null,
     replayUrl: null,
     startedAt: startedAt.toISOString(),

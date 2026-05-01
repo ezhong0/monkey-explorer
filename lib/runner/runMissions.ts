@@ -4,10 +4,26 @@
 //
 // Pre-flight check: if missions.length exceeds the BB plan's concurrent
 // session limit, surface a friendly error.
+//
+// onReauthNeeded is wrapped with a single-flight guard: parallel missions
+// that all probe an expired auth state would otherwise each trigger their
+// own bootstrap-auth flow. The guard collapses concurrent calls to one
+// in-flight bootstrap; cache clears on settle so a subsequent expiry retries.
 
 import * as log from '../log/stderr.js';
 import { runMission, type RunMissionOpts } from './runMission.js';
 import type { MissionResult } from '../types.js';
+
+function singleFlight(fn: () => Promise<void>): () => Promise<void> {
+  let inflight: Promise<void> | null = null;
+  return () => {
+    if (inflight) return inflight;
+    inflight = fn().finally(() => {
+      inflight = null;
+    });
+    return inflight;
+  };
+}
 
 const DEFAULT_BB_CONCURRENT_LIMIT = 3; // Developer plan default
 
@@ -35,9 +51,12 @@ export async function runMissions(opts: RunMissionsOpts): Promise<MissionResult[
 
   const total = opts.missions.length;
 
+  const sharedReauth = singleFlight(opts.onReauthNeeded);
+
   const tasks = opts.missions.map((mission, index) =>
     runMission({
       ...opts,
+      onReauthNeeded: sharedReauth,
       mission,
       index,
       total,
@@ -51,6 +70,7 @@ export async function runMissions(opts: RunMissionsOpts): Promise<MissionResult[
         mission,
         target: opts.target.url,
         status: { kind: 'errored', error: (err as Error).message, ranForMs: 0 },
+        verdict: 'fail',
         sessionId: null,
         replayUrl: null,
         startedAt: finishedAt,

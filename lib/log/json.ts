@@ -5,8 +5,9 @@
 // `monkey_version` field and document the change.
 
 import type { AdjudicatorErrorKind, Finding, MissionResult, RunStatus } from '../types.js';
+import { aggregateVerdict, type Verdict } from '../runner/verdict.js';
 
-export type Verdict = 'pass' | 'fail' | 'inconclusive';
+export type { Verdict };
 
 export interface JsonOutputMission {
   mission: string;
@@ -78,35 +79,6 @@ export function buildJsonOutput(opts: {
   };
 }
 
-function aggregateVerdict(verdicts: Verdict[]): Verdict {
-  if (verdicts.some((v) => v === 'fail')) return 'fail';
-  if (verdicts.every((v) => v === 'pass')) return 'pass';
-  return 'inconclusive';
-}
-
-/** Per-mission verdict from the run's status + verified findings. */
-function deriveVerdict(status: RunStatus, verifiedFindings: Finding[]): Verdict {
-  // Mission-level failures (didn't complete cleanly) → fail
-  if (
-    status.kind === 'errored' ||
-    status.kind === 'not_started' ||
-    status.kind === 'aborted' ||
-    status.kind === 'timed_out' ||
-    status.kind === 'exceeded_tokens'
-  ) {
-    return 'fail';
-  }
-  // Adjudicator failed but lifter findings shipped → use those
-  // (already in verifiedFindings); falls through to verdict-from-findings
-  const hasSerious = verifiedFindings.some(
-    (f) => f.severity === 'critical' || f.severity === 'high',
-  );
-  if (hasSerious) return 'fail';
-  if (verifiedFindings.length === 0) return 'pass';
-  // medium/low/observation only → inconclusive (worth a look, not a blocker)
-  return 'inconclusive';
-}
-
 function toJsonMission(r: MissionResult, includeSpeculative: boolean): JsonOutputMission {
   const ranForMs = ranForMsOf(r.status);
   const allFindings = findingsOf(r.status);
@@ -116,7 +88,7 @@ function toJsonMission(r: MissionResult, includeSpeculative: boolean): JsonOutpu
     mission: r.mission,
     target: r.target,
     status: r.status.kind,
-    verdict: deriveVerdict(r.status, verified),
+    verdict: r.verdict,
     ranForMs,
     startedAt: r.startedAt,
     finishedAt: r.finishedAt,

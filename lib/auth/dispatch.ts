@@ -16,7 +16,6 @@ export async function dispatchSignIn(opts: {
   email: string | undefined;
   password: string | undefined;
   liveViewUrl: string;
-  configDir: string;
   signal: AbortSignal;
 }): Promise<void> {
   switch (opts.authMode.kind) {
@@ -25,7 +24,8 @@ export async function dispatchSignIn(opts: {
     case 'ai-form': {
       if (!opts.email || !opts.password) {
         throw new Error(
-          'ai-form auth mode requires TEST_EMAIL and TEST_PASSWORD in .env.local. Run `monkey configure`.',
+          'ai-form auth mode requires test email + password on the target. ' +
+            'Re-add the target with `monkey target rm <name>` + `monkey target add <name>`.',
         );
       }
       return aiFormSignIn({
@@ -51,7 +51,6 @@ export async function dispatchSignIn(opts: {
         signInUrl: 'about:blank', // custom files supply their own
         email: opts.email,
         password: opts.password,
-        configDir: opts.configDir,
         customSignInPath: opts.authMode.path,
         signal: opts.signal,
       });

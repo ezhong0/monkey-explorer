@@ -5,7 +5,6 @@
 // new one if missing. Always runs the configured signIn flow (so a re-run
 // after cookie expiry refreshes it).
 
-import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as log from '../lib/log/stderr.js';
 import { requireGlobalState } from '../lib/state/load.js';
@@ -79,10 +78,6 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       email: target.testCredentials?.email,
       password: target.testCredentials?.password,
       liveViewUrl: session.liveViewUrl,
-      // Custom signIn paths: resolve relative to cwd at runtime. The user
-      // typed the path while in some directory; we honor that by resolving
-      // here. Absolute paths pass through untouched.
-      configDir: resolve(process.cwd()),
       signal: new AbortController().signal,
     });
 

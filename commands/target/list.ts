@@ -16,6 +16,7 @@ export async function runTargetList(): Promise<number> {
     return 0;
   }
 
+  out.out(`  ${'NAME'.padEnd(24)} ${'URL'.padEnd(40)} ${'AUTH'.padEnd(11)} STATUS`);
   for (const name of names) {
     const t = state.targets[name];
     const marker = name === state.currentTarget ? '*' : ' ';

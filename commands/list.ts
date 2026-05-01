@@ -182,6 +182,7 @@ function renderStatic(entries: DisplayEntry[]): void {
 
   if (active.length > 0) {
     out.out(`ACTIVE (${active.length}):`);
+    out.out(`  ${'TARGET'.padEnd(20)} ${'DURATION'.padEnd(10)} MISSION   LIVE-VIEW`);
     for (const e of active) {
       const dur = `[${fmtDuration(e.durationMs)}]`.padEnd(10);
       const url = e.liveViewUrl ?? '';
@@ -191,6 +192,7 @@ function renderStatic(entries: DisplayEntry[]): void {
 
   if (recent.length > 0) {
     out.out(`RECENT (${recent.length}):`);
+    out.out(`  ${'TIME'.padEnd(5)}      ${'TARGET'.padEnd(20)} MISSION   ${'DURATION'.padEnd(8)}  ${'FINDINGS'.padEnd(12)}  REPLAY`);
     for (const e of recent) {
       const t = fmtTime(e.startedAt);
       const icon = statusIcon(e.status);

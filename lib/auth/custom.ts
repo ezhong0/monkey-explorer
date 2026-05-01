@@ -1,29 +1,31 @@
 // "custom" auth mode — user provides a JS/TS file exporting a default
 // signIn function. The framework dynamically imports it.
 //
-// Security gate (Red Team finding S1):
-// - Path-traversal block: customSignInPath must resolve within the config
-//   dir (no `..` escaping outside)
-// - First-use SHA-256 hash confirmation (persisted in `.trusted-signin`);
-//   re-prompt on hash change
+// Security gate:
+// - First-use SHA-256 hash confirmation (persisted in
+//   ~/.config/monkey-explorer/.trusted-signin); re-prompt on hash change
 // - Friendly error wrapping for import failures
 //
-// The hash-pin defends against the realistic attack: a teammate clones
-// a malicious template repo with `customSignInPath` pointing at a JS
-// file that exfiltrates `.env.local`. The first-use prompt + hash
-// commit makes that visible.
+// The hash-pin defends against a teammate cloning a malicious template that
+// references a custom signIn file. The first-use prompt + hash commit makes
+// that visible.
+//
+// Path-traversal block was removed in the global-state refactor: paths are
+// resolved to absolute at `monkey target add` time (no template-config
+// scenario), so the previous within-configDir constraint no longer applies.
 
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
-import { resolve, isAbsolute, relative, join } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { confirm } from '@inquirer/prompts';
 import type { Page } from 'playwright-core';
 import type { SignInFn } from '../types.js';
 import * as log from '../log/stderr.js';
+import { getBaseDir } from '../state/path.js';
 
-const TRUSTED_FILE = '.trusted-signin';
+const TRUSTED_FILENAME = '.trusted-signin';
 
 export class CustomSignInError extends Error {
   constructor(message: string) {
@@ -32,17 +34,8 @@ export class CustomSignInError extends Error {
   }
 }
 
-export function resolveCustomSignInPath(rawPath: string, configDir: string): string {
-  const resolved = isAbsolute(rawPath) ? rawPath : resolve(configDir, rawPath);
-  // Path traversal block: must resolve within configDir.
-  const rel = relative(configDir, resolved);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new CustomSignInError(
-      `customSignInPath ${rawPath} resolves outside the project directory (${resolved}).\n` +
-        `For security, custom signIn files must live inside the project directory.`,
-    );
-  }
-  return resolved;
+function getTrustedFilePath(): string {
+  return join(getBaseDir(), TRUSTED_FILENAME);
 }
 
 async function sha256OfFile(filePath: string): Promise<string> {
@@ -50,15 +43,16 @@ async function sha256OfFile(filePath: string): Promise<string> {
   return createHash('sha256').update(buf).digest('hex');
 }
 
-async function readTrustedHashes(configDir: string): Promise<Set<string>> {
-  const p = join(configDir, TRUSTED_FILE);
+async function readTrustedHashes(): Promise<Set<string>> {
+  const p = getTrustedFilePath();
   if (!existsSync(p)) return new Set();
   const text = await readFile(p, 'utf-8');
   return new Set(text.split('\n').map((l) => l.trim()).filter(Boolean));
 }
 
-async function persistTrustedHash(configDir: string, hash: string): Promise<void> {
-  const p = join(configDir, TRUSTED_FILE);
+async function persistTrustedHash(hash: string): Promise<void> {
+  const p = getTrustedFilePath();
+  await mkdir(dirname(p), { recursive: true });
   const existing = existsSync(p) ? await readFile(p, 'utf-8') : '';
   await writeFile(p, existing.replace(/\n*$/, '\n') + hash + '\n');
 }
@@ -68,21 +62,22 @@ export async function customSignIn(opts: {
   signInUrl: string;
   email: string | undefined;
   password: string | undefined;
-  configDir: string;
   customSignInPath: string;
   signal: AbortSignal;
 }): Promise<void> {
-  const fullPath = resolveCustomSignInPath(opts.customSignInPath, opts.configDir);
+  // customSignInPath is stored absolute by `target add`; no resolution needed.
+  const fullPath = opts.customSignInPath;
 
   if (!existsSync(fullPath)) {
     throw new CustomSignInError(
       `Custom signIn file not found: ${fullPath}\n` +
-        `Check customSignInPath in monkey.config.json.`,
+        `The path was set when this target was added; run \`monkey target rm <name>\` ` +
+        `and \`monkey target add <name>\` again to update it.`,
     );
   }
 
   const hash = await sha256OfFile(fullPath);
-  const trusted = await readTrustedHashes(opts.configDir);
+  const trusted = await readTrustedHashes();
 
   if (!trusted.has(hash)) {
     log.blank();
@@ -101,12 +96,11 @@ export async function customSignIn(opts: {
     if (!accepted) {
       throw new CustomSignInError('Custom signIn not trusted; aborting.');
     }
-    await persistTrustedHash(opts.configDir, hash);
-    log.ok('Trusted hash persisted to .trusted-signin');
+    await persistTrustedHash(hash);
+    log.ok(`Trusted hash persisted to ${getTrustedFilePath()}`);
     log.blank();
   }
 
-  // Dynamic import with error wrapping.
   let mod: { default?: unknown };
   try {
     mod = await import(pathToFileURL(fullPath).href);

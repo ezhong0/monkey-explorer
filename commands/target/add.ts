@@ -9,6 +9,7 @@
 // the "fully succeed or fully fail" rule for CI: one command provisions a
 // target end-to-end (state + cookie).
 
+import { resolve } from 'node:path';
 import { input, password, select } from '../../lib/prompts/index.js';
 import * as log from '../../lib/log/stderr.js';
 import { requireGlobalState } from '../../lib/state/load.js';
@@ -106,7 +107,9 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
         authMode = { kind: 'none' };
         break;
       case 'custom':
-        authMode = { kind: 'custom', path: opts.customPath! };
+        // Resolve to absolute now so the path is unambiguous regardless of
+        // the cwd at later runs. See design doc concurrency + cwd-decoupling.
+        authMode = { kind: 'custom', path: resolve(process.cwd(), opts.customPath!) };
         break;
       default:
         log.fail(`Unknown --auth-mode "${authModeFlag}". Valid: ${VALID_AUTH_MODES.join(', ')}.`);
@@ -187,7 +190,8 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
           message: 'Path to your signIn JS file (relative to this directory):',
           default: './signin.mjs',
         });
-        authMode = { kind: 'custom', path: customPath };
+        // Store as absolute so cwd at later runs doesn't matter.
+        authMode = { kind: 'custom', path: resolve(process.cwd(), customPath) };
         break;
       }
       default:

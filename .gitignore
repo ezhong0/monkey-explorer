@@ -1,0 +1,15 @@
+node_modules/
+*.log
+.DS_Store
+
+# Defensive — protects user-side artifacts if monkey-explorer is run inside its own source dir.
+.env
+.env.local
+.env.*.local
+monkey.config.json
+reports/
+.context-id
+.last-target
+.trusted-signin
+*.tmp
+tsconfig.tsbuildinfo

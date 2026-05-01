@@ -7,8 +7,16 @@ export function targetExists(state: GlobalState, name: string): boolean {
   return name in state.targets;
 }
 
+/**
+ * A target is "bootstrapped" only if BOTH a BB context handle exists AND a
+ * past signIn succeeded (post-check confirmed). The contextId alone is not
+ * enough: bootstrap-auth persists contextId before signIn so a half-state
+ * (context minted, signIn failed) is possible. Such half-state is NOT
+ * bootstrapped — checking this predicate avoids reusing a context that
+ * has no valid cookie.
+ */
 export function targetIsBootstrapped(target: Target): boolean {
-  return target.contextId.length > 0;
+  return target.contextId.length > 0 && target.lastSignedInAt.length > 0;
 }
 
 export function hasGlobalCredentials(state: GlobalState | null): boolean {

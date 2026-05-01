@@ -34,6 +34,8 @@ export interface LoginOpts {
   openaiKey?: string;
   bbProject?: string;
   anthropicKey?: string;
+  /** When set, error rather than prompt if non-flag fields are missing. */
+  nonInteractive?: boolean;
 }
 
 export async function runLogin(opts: LoginOpts): Promise<number> {
@@ -121,6 +123,12 @@ export async function runLogin(opts: LoginOpts): Promise<number> {
     if (partialFlagsProvided) {
       log.fail('Partial flags provided. Either pass all required flags or none.');
       log.info('  Required for non-interactive: --browserbase-key, --openai-key.');
+      log.info('  Optional: --bb-project, --anthropic-key.');
+      return 1;
+    }
+    if (opts.nonInteractive) {
+      log.fail('--non-interactive set but no credential flags provided.');
+      log.info('  Required: --browserbase-key, --openai-key.');
       log.info('  Optional: --bb-project, --anthropic-key.');
       return 1;
     }

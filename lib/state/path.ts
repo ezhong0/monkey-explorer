@@ -27,6 +27,26 @@ export function getReportsBaseDir(): string {
   return join(getBaseDir(), 'reports');
 }
 
+/**
+ * Allowed target name shape: alphanumerics, underscores, hyphens. No path
+ * separators, no `..`, no spaces. Tight by construction so reports paths
+ * can't escape the reports base dir.
+ */
+export const TARGET_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
+
+export function isValidTargetName(name: string): boolean {
+  return TARGET_NAME_PATTERN.test(name);
+}
+
+/**
+ * Defensive: even if a malformed name slips past target/add.ts (e.g., direct
+ * config edit), refuse to construct a path that could escape the base dir.
+ */
 export function getReportsDirForTarget(targetName: string): string {
+  if (!isValidTargetName(targetName)) {
+    throw new Error(
+      `Invalid target name "${targetName}" — must match ${TARGET_NAME_PATTERN.source}`,
+    );
+  }
   return join(getReportsBaseDir(), targetName);
 }

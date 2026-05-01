@@ -9,6 +9,40 @@ import { ZodError } from 'zod';
 import { getConfigPath } from './path.js';
 import { GlobalStateSchema, type GlobalState, CURRENT_SCHEMA_VERSION } from './schema.js';
 
+/**
+ * Migrate a raw v1 config into v2 shape. v1 had testCredentials at Target
+ * level; v2 has them inside AuthMode variants. lastSignedInAt is new; we
+ * conservatively set it to empty (forces a re-bootstrap on next run).
+ */
+function migrateV1ToV2(raw: Record<string, unknown>): Record<string, unknown> {
+  const targets = (raw.targets ?? {}) as Record<string, Record<string, unknown>>;
+  const migratedTargets: Record<string, Record<string, unknown>> = {};
+  for (const [name, t] of Object.entries(targets)) {
+    const authMode = (t.authMode ?? {}) as Record<string, unknown>;
+    const testCreds = (t.testCredentials ?? null) as { email: string; password: string } | null;
+    const newAuthMode: Record<string, unknown> = { ...authMode };
+    if (authMode.kind === 'ai-form' && testCreds) {
+      newAuthMode.testEmail = testCreds.email;
+      newAuthMode.testPassword = testCreds.password;
+    } else if (authMode.kind === 'custom' && testCreds) {
+      newAuthMode.testEmail = testCreds.email;
+      newAuthMode.testPassword = testCreds.password;
+    }
+    migratedTargets[name] = {
+      url: t.url,
+      authMode: newAuthMode,
+      contextId: t.contextId ?? '',
+      lastSignedInAt: '', // unknown; force re-bootstrap to populate
+      lastUsed: t.lastUsed ?? '',
+    };
+  }
+  return {
+    ...raw,
+    $schema_version: 2,
+    targets: migratedTargets,
+  };
+}
+
 export async function loadGlobalState(): Promise<GlobalState | null> {
   const path = getConfigPath();
   if (!existsSync(path)) return null;
@@ -24,14 +58,23 @@ export async function loadGlobalState(): Promise<GlobalState | null> {
     );
   }
 
-  // Schema version check before Zod parsing — gives a clearer error if a future
-  // schema is being read by an older monkey.
+  // Schema version check before Zod parsing.
   const versionField = (raw as { $schema_version?: unknown }).$schema_version;
   if (typeof versionField === 'number' && versionField > CURRENT_SCHEMA_VERSION) {
     throw new Error(
       `${path} was written by a newer monkey-explorer version (schema v${versionField}). ` +
         `Upgrade monkey-explorer or remove the file and re-run \`monkey login\`.`,
     );
+  }
+
+  // v1 → v2 migration: testCredentials moved from Target into AuthMode.
+  if (versionField === 1) {
+    raw = migrateV1ToV2(raw as Record<string, unknown>);
+    // Save the migrated state back so future loads are clean.
+    const migrated = GlobalStateSchema.parse(raw);
+    const { saveGlobalState } = await import('./save.js');
+    await saveGlobalState(migrated);
+    return migrated;
   }
 
   try {

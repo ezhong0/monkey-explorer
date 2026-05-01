@@ -3,6 +3,7 @@
 import * as out from '../../lib/log/stdout.js';
 import * as log from '../../lib/log/stderr.js';
 import { loadGlobalState } from '../../lib/state/load.js';
+import { targetIsBootstrapped } from '../../lib/state/predicates.js';
 
 export async function runTargetList(): Promise<number> {
   const state = await loadGlobalState();
@@ -21,7 +22,11 @@ export async function runTargetList(): Promise<number> {
     const t = state.targets[name];
     const marker = name === state.currentTarget ? '*' : ' ';
     const auth = t.authMode.kind;
-    const ctx = t.contextId ? 'bootstrapped' : 'not bootstrapped';
+    const ctx = targetIsBootstrapped(t)
+      ? 'bootstrapped'
+      : t.contextId
+        ? 'context only (signIn unconfirmed)'
+        : 'not bootstrapped';
     out.out(`${marker} ${name.padEnd(24)} ${t.url.padEnd(40)} ${auth.padEnd(11)} ${ctx}`);
   }
   return 0;

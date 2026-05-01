@@ -64,6 +64,7 @@ export async function customSignIn(opts: {
   password: string | undefined;
   customSignInPath: string;
   signal: AbortSignal;
+  nonInteractive: boolean;
 }): Promise<void> {
   // customSignInPath is stored absolute by `target add`; no resolution needed.
   const fullPath = opts.customSignInPath;
@@ -80,6 +81,15 @@ export async function customSignIn(opts: {
   const trusted = await readTrustedHashes();
 
   if (!trusted.has(hash)) {
+    if (opts.nonInteractive) {
+      throw new CustomSignInError(
+        `Custom signIn file at ${fullPath} is not trusted (SHA-256 ${hash}).\n` +
+          `In non-interactive mode, monkey can't prompt for confirmation. ` +
+          `Pre-trust the file by appending the hash to ${getTrustedFilePath()}, ` +
+          `then re-run the command.`,
+      );
+    }
+
     log.blank();
     log.warn('Custom signIn file requires confirmation:');
     log.info(`  Path:     ${fullPath}`);

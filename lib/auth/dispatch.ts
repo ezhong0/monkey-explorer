@@ -1,5 +1,10 @@
 // Dispatch on AuthMode discriminator. Each mode gets its own module;
 // this just routes.
+//
+// v2: testEmail/testPassword live inside AuthMode now (for ai-form they're
+// required by the schema; for custom they're optional). dispatch reads them
+// straight off authMode rather than from a separate Target.testCredentials
+// field — the asymmetry that bit Bug #1 is gone by construction.
 
 import type { Page } from 'playwright-core';
 import type { Stagehand } from '@browserbasehq/stagehand';
@@ -13,30 +18,22 @@ export async function dispatchSignIn(opts: {
   authMode: AuthMode;
   page: Page;
   stagehand: Stagehand;
-  email: string | undefined;
-  password: string | undefined;
   liveViewUrl: string;
   signal: AbortSignal;
+  nonInteractive: boolean;
 }): Promise<void> {
   switch (opts.authMode.kind) {
     case 'none':
       return noneSignIn();
-    case 'ai-form': {
-      if (!opts.email || !opts.password) {
-        throw new Error(
-          'ai-form auth mode requires test email + password on the target. ' +
-            'Re-add the target with `monkey target rm <name>` + `monkey target add <name>`.',
-        );
-      }
+    case 'ai-form':
       return aiFormSignIn({
         stagehand: opts.stagehand,
         page: opts.page,
         signInUrl: opts.authMode.signInUrl,
-        email: opts.email,
-        password: opts.password,
+        email: opts.authMode.testEmail,
+        password: opts.authMode.testPassword,
         signal: opts.signal,
       });
-    }
     case 'interactive':
       return interactiveSignIn({
         page: opts.page,
@@ -49,10 +46,11 @@ export async function dispatchSignIn(opts: {
       return customSignIn({
         page: opts.page,
         signInUrl: 'about:blank', // custom files supply their own
-        email: opts.email,
-        password: opts.password,
+        email: opts.authMode.testEmail,
+        password: opts.authMode.testPassword,
         customSignInPath: opts.authMode.path,
         signal: opts.signal,
+        nonInteractive: opts.nonInteractive,
       });
     default: {
       const _: never = opts.authMode;

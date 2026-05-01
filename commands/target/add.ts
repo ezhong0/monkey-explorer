@@ -14,6 +14,7 @@ import { input, password, select } from '../../lib/prompts/index.js';
 import * as log from '../../lib/log/stderr.js';
 import { requireGlobalState } from '../../lib/state/load.js';
 import { saveGlobalState } from '../../lib/state/save.js';
+import { isValidTargetName, TARGET_NAME_PATTERN } from '../../lib/state/path.js';
 import type { AuthMode, GlobalState, Target } from '../../lib/state/schema.js';
 import { runBootstrapAuth } from '../bootstrap-auth.js';
 
@@ -26,6 +27,7 @@ export interface TargetAddOpts {
   testPassword?: string;
   customPath?: string;
   noBootstrap?: boolean;
+  nonInteractive?: boolean;
 }
 
 const VALID_AUTH_MODES = ['ai-form', 'interactive', 'none', 'custom'] as const;
@@ -54,6 +56,12 @@ const AUTH_MODE_CHOICES = [
 
 export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
   const name = opts.name!;
+  if (!isValidTargetName(name)) {
+    log.fail(`Invalid target name "${name}".`);
+    log.info(`  Names must match ${TARGET_NAME_PATTERN.source} (alphanumerics, "_", "-").`);
+    return 1;
+  }
+
   const state = await requireGlobalState();
 
   if (state.targets[name]) {
@@ -82,8 +90,6 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
 
   let url: string;
   let authMode: AuthMode;
-  let testEmail: string | undefined;
-  let testPassword: string | undefined;
 
   if (allFlagsForNonInteractive) {
     url = opts.url!;
@@ -96,9 +102,12 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
 
     switch (authModeFlag) {
       case 'ai-form':
-        authMode = { kind: 'ai-form', signInUrl: opts.signInUrl! };
-        testEmail = opts.testEmail;
-        testPassword = opts.testPassword;
+        authMode = {
+          kind: 'ai-form',
+          signInUrl: opts.signInUrl!,
+          testEmail: opts.testEmail!,
+          testPassword: opts.testPassword!,
+        };
         break;
       case 'interactive':
         authMode = { kind: 'interactive', signInUrl: opts.signInUrl! };
@@ -108,8 +117,15 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
         break;
       case 'custom':
         // Resolve to absolute now so the path is unambiguous regardless of
-        // the cwd at later runs. See design doc concurrency + cwd-decoupling.
-        authMode = { kind: 'custom', path: resolve(process.cwd(), opts.customPath!) };
+        // the cwd at later runs.
+        authMode = {
+          kind: 'custom',
+          path: resolve(process.cwd(), opts.customPath!),
+          // testEmail / testPassword are optional for custom — pass through
+          // if provided.
+          testEmail: opts.testEmail,
+          testPassword: opts.testPassword,
+        };
         break;
       default:
         log.fail(`Unknown --auth-mode "${authModeFlag}". Valid: ${VALID_AUTH_MODES.join(', ')}.`);
@@ -130,7 +146,13 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
       log.info('  Required: --url, --auth-mode.');
       log.info('  --auth-mode ai-form also needs: --sign-in-url, --test-email, --test-password.');
       log.info('  --auth-mode interactive also needs: --sign-in-url.');
-      log.info('  --auth-mode custom also needs: --custom-path.');
+      log.info('  --auth-mode custom also needs: --custom-path. Optional: --test-email, --test-password.');
+      return 1;
+    }
+    if (opts.nonInteractive) {
+      log.fail('--non-interactive set but no provisioning flags provided.');
+      log.info('  Pass --url, --auth-mode, and any auth-mode-specific flags.');
+      log.info('  See `monkey target add --help` for required flags per auth mode.');
       return 1;
     }
 
@@ -156,7 +178,29 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     });
 
     switch (authKind) {
-      case 'ai-form':
+      case 'ai-form': {
+        const signInUrl = await input({
+          message: 'Sign-in URL:',
+          validate: (v) => {
+            try {
+              new URL(v);
+              return true;
+            } catch {
+              return 'Must be a valid URL';
+            }
+          },
+        });
+        const testEmail = await input({
+          message: 'Test user email:',
+          validate: (v) => (/^.+@.+\..+$/.test(v) ? true : 'Must be a valid email'),
+        });
+        const testPassword = await password({
+          message: 'Test user password:',
+          mask: '*',
+        });
+        authMode = { kind: 'ai-form', signInUrl, testEmail, testPassword };
+        break;
+      }
       case 'interactive': {
         const signInUrl = await input({
           message: 'Sign-in URL:',
@@ -169,17 +213,7 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
             }
           },
         });
-        if (authKind === 'ai-form') {
-          testEmail = await input({
-            message: 'Test user email:',
-            validate: (v) => (/^.+@.+\..+$/.test(v) ? true : 'Must be a valid email'),
-          });
-          testPassword = await password({
-            message: 'Test user password:',
-            mask: '*',
-          });
-        }
-        authMode = { kind: authKind, signInUrl };
+        authMode = { kind: 'interactive', signInUrl };
         break;
       }
       case 'none':
@@ -190,8 +224,32 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
           message: 'Path to your signIn JS file (relative to this directory):',
           default: './signin.mjs',
         });
-        // Store as absolute so cwd at later runs doesn't matter.
-        authMode = { kind: 'custom', path: resolve(process.cwd(), customPath) };
+        const wantsCreds = await select({
+          message: 'Does your custom signIn need test credentials?',
+          choices: [
+            { name: 'No', value: 'no' as const },
+            { name: 'Yes — provide email + password', value: 'yes' as const },
+          ],
+          default: 'no',
+        });
+        let testEmail: string | undefined;
+        let testPassword: string | undefined;
+        if (wantsCreds === 'yes') {
+          testEmail = await input({
+            message: 'Test user email:',
+            validate: (v) => (/^.+@.+\..+$/.test(v) ? true : 'Must be a valid email'),
+          });
+          testPassword = await password({
+            message: 'Test user password:',
+            mask: '*',
+          });
+        }
+        authMode = {
+          kind: 'custom',
+          path: resolve(process.cwd(), customPath),
+          testEmail,
+          testPassword,
+        };
         break;
       }
       default:
@@ -203,9 +261,8 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
   const target: Target = {
     url,
     authMode,
-    testCredentials:
-      testEmail && testPassword ? { email: testEmail, password: testPassword } : undefined,
     contextId: '',
+    lastSignedInAt: '',
     lastUsed: '',
   };
 
@@ -234,5 +291,5 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
   }
 
   log.blank();
-  return runBootstrapAuth({ targetName: name });
+  return runBootstrapAuth({ targetName: name, nonInteractive: opts.nonInteractive });
 }

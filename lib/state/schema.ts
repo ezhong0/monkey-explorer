@@ -6,15 +6,20 @@
 
 import { z } from 'zod';
 
-// ─── Reused shapes (copies of what was in lib/config/schema.ts) ───
+// ─── AuthMode discriminated union (v2 schema) ───
 //
-// AuthMode and Caps were per-project before; now they live per-target inside
-// the global state. The shapes don't change.
+// v2 change: testEmail + testPassword moved from Target.testCredentials into
+// the AuthMode variants that need them. ai-form REQUIRES them by construction.
+// custom MAY optionally have them (passed through to the user's signIn fn).
+// interactive and none don't carry creds at all. This eliminates the
+// asymmetric-handling bug that was possible in v1.
 
 export const AuthModeSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('ai-form'),
     signInUrl: z.string().url(),
+    testEmail: z.string().email(),
+    testPassword: z.string().min(1),
   }),
   z.object({
     kind: z.literal('interactive'),
@@ -26,6 +31,8 @@ export const AuthModeSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('custom'),
     path: z.string().min(1),
+    testEmail: z.string().email().optional(),
+    testPassword: z.string().min(1).optional(),
   }),
 ]);
 
@@ -61,19 +68,15 @@ export const DefaultsSchema = z.object({
 // ─── Target block (per-app being tested) ───
 //
 // `contextId` is empty string until bootstrap-auth runs; non-empty after.
+// `lastSignedInAt` is empty string until signIn post-check confirms success;
+// only THEN is the target truly bootstrapped. Used by `targetIsBootstrapped`.
 // `lastUsed` is best-effort; concurrent writes may lose updates.
-// `testCredentials` is undefined for `none` and `custom` auth modes.
 
 export const TargetSchema = z.object({
   url: z.string().url(),
   authMode: AuthModeSchema,
-  testCredentials: z
-    .object({
-      email: z.string().email(),
-      password: z.string().min(1),
-    })
-    .optional(),
   contextId: z.string(),
+  lastSignedInAt: z.string(),
   lastUsed: z.string(),
 });
 
@@ -112,7 +115,7 @@ export const DEFAULT_DEFAULTS: Defaults = {
   caps: DEFAULT_CAPS,
 };
 
-export const CURRENT_SCHEMA_VERSION = 1 as const;
+export const CURRENT_SCHEMA_VERSION = 2 as const;
 
 // ─── Empty state factory ───
 

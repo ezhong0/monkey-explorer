@@ -9,6 +9,7 @@ import { runTargetShow } from './show.js';
 
 export interface TargetDispatchOpts {
   positional: string[]; // [subcommand, name?, ...rest]
+  nonInteractive: boolean;
   addFlags: TargetAddOpts;
 }
 
@@ -22,7 +23,7 @@ export async function runTargetDispatch(opts: TargetDispatchOpts): Promise<numbe
         log.fail('Usage: monkey target add <name> [flags]');
         return 1;
       }
-      return runTargetAdd({ ...opts.addFlags, name });
+      return runTargetAdd({ ...opts.addFlags, name, nonInteractive: opts.nonInteractive });
     case 'list':
       return runTargetList();
     case 'use':
@@ -36,7 +37,7 @@ export async function runTargetDispatch(opts: TargetDispatchOpts): Promise<numbe
         log.fail('Usage: monkey target rm <name>');
         return 1;
       }
-      return runTargetRm(name);
+      return runTargetRm(name, { nonInteractive: opts.nonInteractive });
     case 'show':
       return runTargetShow(name);
     case undefined:

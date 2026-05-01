@@ -7,8 +7,15 @@
 import { z } from 'zod';
 import { FindingSchema } from '../findings/schema.js';
 
+/**
+ * Report-file front-matter schema version. Independent of the global config
+ * schema version (lib/state/schema.ts CURRENT_SCHEMA_VERSION) — reports have
+ * their own evolution.
+ */
+export const REPORT_SCHEMA_VERSION = 1 as const;
+
 const Common = {
-  $schema_version: z.literal(1),
+  $schema_version: z.literal(REPORT_SCHEMA_VERSION),
   started_at: z.string().datetime(),
   target_url: z.string().url(),
   mission: z.string().min(1),

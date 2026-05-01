@@ -21,17 +21,26 @@ export async function runTargetShow(name: string | undefined): Promise<number> {
   out.out(`name:           ${resolvedName}${resolvedName === state.currentTarget ? ' (current)' : ''}`);
   out.out(`url:            ${target.url}`);
   out.out(`authMode:       ${target.authMode.kind}`);
-  if (target.authMode.kind === 'ai-form' || target.authMode.kind === 'interactive') {
+
+  // testEmail / testPassword now live inside AuthMode variants (v2 schema).
+  let testEmail: string | undefined;
+  let testPasswordSet = false;
+  if (target.authMode.kind === 'ai-form') {
     out.out(`signInUrl:      ${target.authMode.signInUrl}`);
-  }
-  if (target.authMode.kind === 'custom') {
+    testEmail = target.authMode.testEmail;
+    testPasswordSet = !!target.authMode.testPassword;
+  } else if (target.authMode.kind === 'interactive') {
+    out.out(`signInUrl:      ${target.authMode.signInUrl}`);
+  } else if (target.authMode.kind === 'custom') {
     out.out(`customPath:     ${target.authMode.path}`);
+    testEmail = target.authMode.testEmail;
+    testPasswordSet = !!target.authMode.testPassword;
   }
-  if (target.testCredentials) {
-    out.out(`testEmail:      ${target.testCredentials.email}`);
-    out.out(`testPassword:   ***`);
-  }
-  out.out(`contextId:      ${target.contextId || '(not bootstrapped)'}`);
+  if (testEmail) out.out(`testEmail:      ${testEmail}`);
+  if (testPasswordSet) out.out(`testPassword:   ***`);
+
+  out.out(`contextId:      ${target.contextId || '(none)'}`);
+  out.out(`lastSignedInAt: ${target.lastSignedInAt || '(never)'}`);
   out.out(`lastUsed:       ${target.lastUsed || '(never)'}`);
   return 0;
 }

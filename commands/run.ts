@@ -11,7 +11,7 @@ import * as log from '../lib/log/stderr.js';
 import { buildJsonOutput, emitJson } from '../lib/log/json.js';
 import { requireGlobalState } from '../lib/state/load.js';
 import { updateTarget } from '../lib/state/save.js';
-import { resolveTarget } from '../lib/state/predicates.js';
+import { resolveTarget, targetIsBootstrapped } from '../lib/state/predicates.js';
 import { getReportsBaseDir } from '../lib/state/path.js';
 import { createClient } from '../lib/bb/client.js';
 import { sweepStaleTmpFiles, sweepStaleRunningReports } from '../lib/report/write.js';
@@ -99,11 +99,15 @@ export async function runRun(opts: RunOpts): Promise<number> {
     return 0;
   }
 
-  // Auto-bootstrap if target has no contextId yet (e.g., user added with
-  // --no-bootstrap). Skip for `none` auth mode.
-  if (!target.contextId && target.authMode.kind !== 'none') {
+  // Auto-bootstrap if target isn't fully bootstrapped (no contextId, OR
+  // contextId exists but lastSignedInAt is empty — meaning a previous
+  // bootstrap minted a context but signIn never succeeded). Skip for `none`.
+  if (!targetIsBootstrapped(target) && target.authMode.kind !== 'none') {
     log.warn(`Target "${targetName}" not bootstrapped — running bootstrap-auth first.`);
-    const code = await runBootstrapAuth({ targetName });
+    const code = await runBootstrapAuth({
+      targetName,
+      nonInteractive: opts.nonInteractive,
+    });
     if (code !== 0) return code;
   }
 
@@ -116,6 +120,12 @@ export async function runRun(opts: RunOpts): Promise<number> {
   registerCleanup(async () => {
     // Best-effort: per-mission cleanups handle SIGINT propagation.
   });
+
+  // In --json mode, Stagehand's internal logging can leak to stdout (some
+  // paths bypass both pino and the logger callback). We hijack stdout for
+  // the duration of mission execution, redirecting writes to stderr, and
+  // restore it before emitJson. Keeps the JSON output channel clean.
+  const restoreStdout = opts.json ? quarantineStdout() : null;
 
   const invocationId = randomUUID().slice(0, 8);
   const startedAt = Date.now();
@@ -137,7 +147,7 @@ export async function runRun(opts: RunOpts): Promise<number> {
     signal: getRootSignal(),
     onReauthNeeded: async () => {
       log.fail('Auth expired. Re-authenticating…');
-      await runBootstrapAuth({ targetName });
+      await runBootstrapAuth({ targetName, nonInteractive: opts.nonInteractive });
     },
   });
 
@@ -150,6 +160,8 @@ export async function runRun(opts: RunOpts): Promise<number> {
 
   if (opts.json) {
     const version = await readPackageVersion();
+    // Restore stdout so emitJson writes to the real channel, not stderr.
+    if (restoreStdout) restoreStdout();
     emitJson(buildJsonOutput({ monkeyVersion: version, results, walledMs }));
   } else {
     printSummary(results, walledMs);
@@ -242,4 +254,22 @@ function fmtDuration(ms: number): string {
   const m = Math.floor(s / 60);
   const rs = s % 60;
   return rs ? `${m}m ${rs}s` : `${m}m`;
+}
+
+/**
+ * Hijack process.stdout.write to redirect all output to stderr. Returns a
+ * restore function. Used in --json mode to keep stdout clean of Stagehand's
+ * stray DEBUG output that bypasses the logger callback.
+ */
+function quarantineStdout(): () => void {
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  // The real signature has overloads (string|Uint8Array, encoding?, callback?).
+  // We just funnel everything to stderr.write.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  process.stdout.write = ((chunk: any, ...rest: any[]) => {
+    return process.stderr.write(chunk, ...rest);
+  }) as typeof process.stdout.write;
+  return () => {
+    process.stdout.write = originalWrite;
+  };
 }

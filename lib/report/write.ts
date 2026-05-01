@@ -11,7 +11,7 @@
 import { mkdir, rename, writeFile, readdir, stat, unlink, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { CURRENT_SCHEMA_VERSION } from '../state/schema.js';
+import { REPORT_SCHEMA_VERSION as CURRENT_SCHEMA_VERSION } from './schema.js';
 import { sanitizeText } from '../findings/sanitize.js';
 import { renderRunningReport, renderTerminalReport } from './render.js';
 import { reportFilename, reportPath, tmpPath } from './paths.js';

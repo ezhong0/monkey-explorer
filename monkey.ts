@@ -317,12 +317,14 @@ async function main(argv: string[]): Promise<number> {
           openaiKey: args['openai-key'],
           bbProject: args['bb-project'],
           anthropicKey: args['anthropic-key'],
+          nonInteractive: Boolean(args['non-interactive']),
         });
       }
       case 'target': {
         const { runTargetDispatch } = await import('./commands/target/index.js');
         return runTargetDispatch({
           positional: args._.slice(1),
+          nonInteractive: Boolean(args['non-interactive']),
           addFlags: {
             url: args.url,
             authMode: args['auth-mode'],
@@ -344,7 +346,10 @@ async function main(argv: string[]): Promise<number> {
       }
       case 'bootstrap-auth': {
         const { runBootstrapAuth } = await import('./commands/bootstrap-auth.js');
-        return runBootstrapAuth({ targetName: args.target });
+        return runBootstrapAuth({
+          targetName: args.target,
+          nonInteractive: Boolean(args['non-interactive']),
+        });
       }
       case 'list': {
         const { runList } = await import('./commands/list.js');

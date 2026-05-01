@@ -22,6 +22,8 @@ export async function dispatchSignIn(opts: {
   liveViewUrl: string;
   /** Used by cookie-jar mode to filter injected cookies to target's eTLD+1. */
   targetUrl: string;
+  /** Target name — used in cookie-jar error messages for re-export hints. */
+  targetName: string;
   signal: AbortSignal;
   nonInteractive: boolean;
 }): Promise<void> {
@@ -61,6 +63,7 @@ export async function dispatchSignIn(opts: {
         stagehand: opts.stagehand,
         jarPath: opts.authMode.path,
         targetUrl: opts.targetUrl,
+        targetName: opts.targetName,
         signal: opts.signal,
       });
     default: {

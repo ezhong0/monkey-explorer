@@ -5,7 +5,7 @@
 //  - Interactive: prompts.
 //  - Non-interactive: --url + --auth-mode + (kind-dependent fields) → no prompts.
 //
-// Auto-runs bootstrap-auth at the end unless --no-bootstrap is set. This is
+// Auto-runs bootstrap-auth at the end unless --skip-bootstrap is set. This is
 // the "fully succeed or fully fail" rule for CI: one command provisions a
 // target end-to-end (state + cookie).
 
@@ -28,7 +28,7 @@ export interface TargetAddOpts {
   testPassword?: string;
   customPath?: string;
   cookieJarPath?: string;
-  noBootstrap?: boolean;
+  skipBootstrap?: boolean;
   nonInteractive?: boolean;
 }
 
@@ -311,9 +311,9 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     log.ok(`Set "${name}" as current target.`);
   }
 
-  // Auto-bootstrap unless --no-bootstrap or auth mode is 'none'.
-  if (opts.noBootstrap) {
-    log.info('Skipping bootstrap (--no-bootstrap).');
+  // Auto-bootstrap unless --skip-bootstrap or auth mode is 'none'.
+  if (opts.skipBootstrap) {
+    log.info('Skipping bootstrap (--skip-bootstrap).');
     log.info(`  Run \`monkey bootstrap-auth --target ${name}\` later to provision the cookie.`);
     return 0;
   }

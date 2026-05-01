@@ -35,24 +35,40 @@ export interface CookieJarSignInOpts {
   jarPath: string;
   /** The target's URL — used to filter cookies to the matching eTLD+1. */
   targetUrl: string;
+  /** Target name — used in error messages so the re-export hint is copyable. */
+  targetName: string;
   signal: AbortSignal;
 }
 
 export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> {
-  const jar = await loadAndValidate(opts.jarPath);
+  const jar = await loadAndValidate(opts.jarPath, opts.targetName);
 
   // Pre-flight: are ALL cookies expired? Cheap to check before spending
   // BB session time.
-  const now = Math.floor(Date.now() / 1000);
   const liveCookies = jar.cookies.filter(isLive);
   if (liveCookies.length === 0) {
     const latestExpiry = Math.max(...jar.cookies.map((c) => c.expires));
     const latestDate =
       latestExpiry > 0
         ? new Date(latestExpiry * 1000).toISOString().slice(0, 10)
-        : 'all session-only';
+        : 'all were session-only (no persisted cookies in jar)';
     throw new CookieJarError(
-      `All cookies in ${opts.jarPath} are expired (latest: ${latestDate}). Re-export to refresh.`,
+      `All ${jar.cookies.length} cookies in ${opts.jarPath} are expired (latest: ${latestDate}).\n` +
+        `  Refresh with:\n` +
+        `    monkey export-cookies ${opts.targetName}`,
+    );
+  }
+
+  // Warn if cookies are close to expiry (< 24h left).
+  const closeToExpiry = liveCookies.filter((c) => {
+    if (c.expires <= 0) return false;
+    const secondsLeft = c.expires - Math.floor(Date.now() / 1000);
+    return secondsLeft < 24 * 60 * 60;
+  });
+  if (closeToExpiry.length > 0) {
+    log.warn(
+      `${closeToExpiry.length} of ${liveCookies.length} cookies expire within 24h. ` +
+        `Consider running \`monkey export-cookies ${opts.targetName}\` soon.`,
     );
   }
 
@@ -89,11 +105,11 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
   if (matchingCookies.length === 0) {
     const presentDomains = [...new Set(jar.cookies.map((c) => c.domain))].slice(0, 5);
     throw new CookieJarError(
-      `No live cookies in the jar match target domain ${targetEtldPlus1}. ` +
-        `Did you export from the right app? Jar has cookies for: ${presentDomains.join(', ')}`,
+      `No live cookies in the jar match target domain ${targetEtldPlus1}.\n` +
+        `  Did you export from the right app? Jar has cookies for: ${presentDomains.join(', ')}\n` +
+        `  Re-export with: monkey export-cookies ${opts.targetName}`,
     );
   }
-  void now;
 
   // Inject via CDP Storage.setCookies (browser-wide, no session attach needed).
   const cdpCookies = matchingCookies.map(toCdpCookie);
@@ -147,7 +163,7 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
 
 // ─── internals ───
 
-async function loadAndValidate(jarPath: string): Promise<StorageState> {
+async function loadAndValidate(jarPath: string, targetName: string): Promise<StorageState> {
   if (!jarPath.startsWith('/')) {
     throw new CookieJarError(
       `Cookie jar path must be absolute: got ${jarPath}. (target add resolves to absolute; this should not happen in normal use.)`,
@@ -156,7 +172,7 @@ async function loadAndValidate(jarPath: string): Promise<StorageState> {
   if (!existsSync(jarPath)) {
     throw new CookieJarError(
       `Cookie jar not found at ${jarPath}.\n` +
-        `Re-export from your real browser (Playwright storageState API or a cookie-export extension) and place the JSON at this path.`,
+        `  Run \`monkey export-cookies ${targetName}\` to create it.`,
     );
   }
 

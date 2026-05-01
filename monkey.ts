@@ -42,7 +42,9 @@ interface Argv {
   'test-password'?: string;
   'custom-path'?: string;
   'cookie-jar-path'?: string;
-  'no-bootstrap'?: boolean;
+  'skip-bootstrap'?: boolean;
+  // export-cookies flags
+  out?: string;
 }
 
 function parseArgs(argv: string[]): Argv {
@@ -61,8 +63,9 @@ function parseArgs(argv: string[]): Argv {
       'test-password',
       'custom-path',
       'cookie-jar-path',
+      'out',
     ],
-    boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive', 'no-bootstrap'],
+    boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive', 'skip-bootstrap'],
     alias: { h: 'help', v: 'version' },
   }) as Argv;
 }
@@ -80,7 +83,7 @@ Subcommands:
   target add <name>    Add a named target (URL, auth, test creds).
                          Flags: --url, --auth-mode, --sign-in-url, --test-email,
                          --test-password, --custom-path, --cookie-jar-path,
-                         --no-bootstrap.
+                         --skip-bootstrap.
   target list          Show all targets, * marks current.
   target use <name>    Switch the current target.
   target rm <name>     Delete a target.
@@ -89,6 +92,8 @@ Subcommands:
   configure            Edit defaults (models, caps).
   bootstrap-auth       Refresh the BB context cookie.
                          Flags: --target <name> (default: current target).
+  export-cookies <name>  Open local Chrome, sign in, save storageState JSON.
+                         For cookie-jar mode. Flags: --url, --out.
   list                 Show active + recent runs across all targets.
                          Flags: --target <name>, --since <duration> (1h/7d/30m).
 
@@ -177,11 +182,11 @@ Auth-mode-specific flags:
                  resolved to absolute; injected into BB context at bootstrap)
 
 Other flags:
-  --no-bootstrap            Skip the auto bootstrap-auth at the end. Run
+  --skip-bootstrap            Skip the auto bootstrap-auth at the end. Run
                             \`monkey bootstrap-auth --target <name>\` later.
 
 The first added target also becomes the current target. Auto-runs
-bootstrap-auth at the end unless --no-bootstrap or auth-mode is "none".
+bootstrap-auth at the end unless --skip-bootstrap or auth-mode is "none".
 Partial flags are rejected — pass all required, or none.
 `,
 
@@ -244,6 +249,33 @@ sessionTimeoutSec). Press enter on any prompt to keep the current value.
 
 For credential rotation: \`monkey login\`.
 For target-specific changes: \`monkey target rm <name>\` then \`monkey target add <name>\`.
+`,
+
+  'export-cookies': `monkey export-cookies <name> [flags] — open local Chrome and capture session state.
+
+Usage:
+  monkey export-cookies <name>                   Refresh existing cookie-jar target
+  monkey export-cookies <name> --url <url>       Create new cookie-jar target via export
+
+Flags:
+  --url <url>     For new targets — the app URL to navigate to. Required if
+                  the target doesn't already exist.
+  --out <path>    Override output JSON path. Default for new targets:
+                  ~/.config/monkey-explorer/cookie-jars/<name>.json
+                  Default for existing: target's existing cookie-jar-path.
+
+What happens:
+  Opens your local Chrome (or bundled chromium fallback) at the URL. Sign in
+  normally — Google OAuth, MFA, anything. Press Enter in this terminal once
+  you've reached a signed-in page. monkey reads the resulting cookies +
+  localStorage and writes them as a Playwright storageState JSON.
+
+  After this, run \`monkey bootstrap-auth --target <name>\` to inject the
+  cookies into your Browserbase context.
+
+  Why local Chrome: Google's bot detection is hostile to data-center IPs.
+  Signing in from your own browser produces cookies that work fine in BB
+  via cookie-jar mode.
 `,
 
   'bootstrap-auth': `monkey bootstrap-auth [--target <name>] — refresh BB context cookie.
@@ -339,7 +371,7 @@ async function main(argv: string[]): Promise<number> {
             testPassword: args['test-password'],
             customPath: args['custom-path'],
             cookieJarPath: args['cookie-jar-path'],
-            noBootstrap: args['no-bootstrap'],
+            skipBootstrap: args['skip-bootstrap'],
           },
         });
       }
@@ -356,6 +388,19 @@ async function main(argv: string[]): Promise<number> {
         return runBootstrapAuth({
           targetName: args.target,
           nonInteractive: Boolean(args['non-interactive']),
+        });
+      }
+      case 'export-cookies': {
+        const positionalName = args._[1];
+        if (!positionalName) {
+          process.stderr.write('Usage: monkey export-cookies <target-name> [--url <url>] [--out <path>]\n');
+          return 1;
+        }
+        const { runExportCookies } = await import('./commands/export-cookies.js');
+        return runExportCookies({
+          targetName: positionalName,
+          url: args.url,
+          out: args.out,
         });
       }
       case 'list': {

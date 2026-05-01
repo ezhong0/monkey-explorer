@@ -27,6 +27,19 @@ export function getReportsBaseDir(): string {
   return join(getBaseDir(), 'reports');
 }
 
+export function getCookieJarsBaseDir(): string {
+  return join(getBaseDir(), 'cookie-jars');
+}
+
+export function getCookieJarPathForTarget(targetName: string): string {
+  if (!isValidTargetName(targetName)) {
+    throw new Error(
+      `Invalid target name "${targetName}" — must match ${TARGET_NAME_PATTERN.source}`,
+    );
+  }
+  return join(getCookieJarsBaseDir(), `${targetName}.json`);
+}
+
 /**
  * Allowed target name shape: alphanumerics, underscores, hyphens. No path
  * separators, no `..`, no spaces. Tight by construction so reports paths

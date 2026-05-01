@@ -56,7 +56,7 @@ export async function fetchSessionEvents(opts: {
         break;
       }
       case 'Runtime.exceptionThrown': {
-        const event = parseExceptionThrown(log);
+        const event = parseExceptionThrown(log, opts.targetOrigin);
         if (event && consoleErrors.length < MAX_EVENTS) consoleErrors.push(event);
         break;
       }
@@ -94,6 +94,38 @@ function isFirstParty(url: string | undefined, targetOrigin: string): boolean {
   }
 }
 
+// Known noise-source hosts. Errors thrown from these origins are infrastructure
+// noise (Vercel preview toolbar, analytics, ads) and not bugs in the target app.
+// Even when surfaced through a first-party page, these errors come from
+// third-party scripts/iframes and aren't actionable for the user testing
+// their app.
+const NOISE_HOSTS = [
+  'vercel.live',
+  'vercel.com',
+  'vercel-insights.com',
+  'googletagmanager.com',
+  'google-analytics.com',
+  'doubleclick.net',
+  'fullstory.com',
+  'sentry.io',
+  'datadoghq.com',
+  'segment.io',
+  'mixpanel.com',
+  'hotjar.com',
+  'posthog.com',
+  'launchdarkly.com',
+];
+
+function isFromNoiseSource(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const host = new URL(url).hostname;
+    return NOISE_HOSTS.some((n) => host === n || host.endsWith(`.${n}`));
+  } catch {
+    return false;
+  }
+}
+
 interface ConsoleAPICalledParams {
   type?: string;
   args?: Array<{ value?: unknown; description?: string }>;
@@ -112,6 +144,11 @@ function parseConsoleApiCalled(log: SessionLog, targetOrigin: string): ConsoleEv
   if (!message) return null;
 
   const topFrame = p.stackTrace?.callFrames?.[0];
+  // Drop if top frame is from a known noise source (Vercel toolbar iframe,
+  // analytics, etc.) — even when surfaced through the page, these aren't
+  // bugs the user testing their app cares about.
+  if (topFrame && isFromNoiseSource(topFrame.url)) return null;
+  // Only keep events whose top frame is genuinely first-party.
   if (topFrame && !isFirstParty(topFrame.url, targetOrigin)) return null;
 
   return {
@@ -134,10 +171,14 @@ interface ExceptionThrownParams {
   };
 }
 
-function parseExceptionThrown(log: SessionLog): ConsoleEvent | null {
+function parseExceptionThrown(log: SessionLog, targetOrigin: string): ConsoleEvent | null {
   const p = (log.request?.params ?? log.response?.result ?? {}) as ExceptionThrownParams;
   const ex = p.exceptionDetails;
   if (!ex) return null;
+  // Drop noise-source exceptions (Vercel toolbar, analytics).
+  if (ex.url && isFromNoiseSource(ex.url)) return null;
+  // Drop third-party exceptions in general.
+  if (ex.url && !isFirstParty(ex.url, targetOrigin)) return null;
   const message = sanitizeText(
     (ex.exception?.description ?? ex.text ?? 'unknown exception').toString(),
   );

@@ -62,6 +62,8 @@ export async function createStagehand(opts: CreateStagehandOpts): Promise<Stageh
     apiKey: opts.apiKey,
     projectId: opts.projectId,
     browserbaseSessionID: opts.sessionId,
+    // Required for custom tools / MCP integrations on the agent path.
+    experimental: true,
     model: {
       modelName: opts.modelName,
       apiKey: opts.modelApiKey,

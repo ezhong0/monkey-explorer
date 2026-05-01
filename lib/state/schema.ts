@@ -147,8 +147,14 @@ export const DEFAULT_CAPS: Caps = {
 };
 
 export const DEFAULT_MODELS = {
+  // Used by Stagehand's extract() and act() — text-mostly calls, not the
+  // agentic loop. OpenAI gpt-5.5 here is fine.
   stagehandModel: 'openai/gpt-5.5',
-  agentModel: 'openai/gpt-5.5',
+  // Anthropic Sonnet 4.5 — CUA-capable. Stagehand's agent routes through
+  // the Anthropic CUA path, which advertises user-provided tools to the
+  // model (so `report_finding` gets called inline during exploration).
+  // Requires anthropicApiKey in credentials.
+  agentModel: 'anthropic/claude-sonnet-4-5-20250929',
 } as const;
 
 export const DEFAULT_DEFAULTS: Defaults = {

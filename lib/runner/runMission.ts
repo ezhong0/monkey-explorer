@@ -22,6 +22,7 @@ import { createSession, type MonkeySession } from '../bb/session.js';
 import { createStagehand } from '../stagehand/adapter.js';
 import { executeAgent } from '../stagehand/agent.js';
 import { extractFindings, isStagehandHandleClosedError } from '../stagehand/extract.js';
+import { pickModelApiKey } from '../stagehand/modelKey.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
@@ -180,6 +181,9 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   let agentSucceeded = false;
   let tokensUsed: number | undefined;
   let agentError: { kind: RunStatus['kind']; message: string } | null = null;
+  // Findings emitted by the agent as it explored (CUA path only; empty
+  // on the AISDK/DOM path — extract picks them up there).
+  let findings: Finding[] = [];
 
   const timer = startWallClockTimer({
     wallClockMs: opts.caps.wallClockMs,
@@ -191,13 +195,14 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     const result = await executeAgent({
       stagehand: stagehandHandle.stagehand,
       agentModel: opts.agentModel,
-      agentApiKey: opts.credentials.openaiApiKey,
+      agentApiKey: pickModelApiKey(opts.agentModel, opts.credentials),
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
       signal: opts.signal,
     });
     agentSucceeded = result.success;
     tokensUsed = result.tokensUsed;
+    findings = result.findings; // already sanitized in agent.ts
     if (result.error) {
       if (timer.fired()) {
         agentError = { kind: 'timed_out', message: result.error.message };
@@ -211,23 +216,21 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     timer.clear(); // clear before extract() so a late-fire doesn't kill it
   }
 
-  // Extract findings via a second LLM call. Skipped if timer fired (session
-  // is closed). Two failure shapes handled distinctly:
-  //   - Stagehand handle closed (BB WS died) → degrade gracefully:
-  //     status: completed, findings: [], with a warn log. The handle-close
-  //     class affects long missions; the bug isn't in monkey itself.
-  //   - Other extract failure (model error, schema mismatch, etc.) →
-  //     status: extract_failed, error surfaced.
-  let findings: Finding[] = [];
+  // Post-hoc extract fallback: only runs when the agent emitted no inline
+  // findings (i.e. the AISDK/DOM path, which can't reliably advertise
+  // user tools to the model). Same handle-closed-degrade behavior as before.
   let extractError: string | null = null;
-  let extractDegraded = false; // did we silently degrade due to handle-close?
-  if (!timer.fired() && !opts.signal.aborted) {
+  if (
+    findings.length === 0 &&
+    !agentError &&
+    !timer.fired() &&
+    !opts.signal.aborted
+  ) {
     try {
       const result = await extractFindings(stagehandHandle.stagehand);
       findings = result.findings.map(sanitizeFinding);
     } catch (err) {
       if (isStagehandHandleClosedError(err)) {
-        extractDegraded = true;
         log.warn(
           `${prefix} extract skipped (Stagehand handle closed after agent.execute). ` +
             `Mission completed but findings unavailable. See replay: ${session!.replayUrl}`,
@@ -241,7 +244,6 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   // Build terminal status. Note: handle-closed-during-extract is treated as
   // a successful mission (the agent did its work; findings extraction is a
   // best-effort second step). Other extract errors fail the mission.
-  void extractDegraded;
   const ranForMs = elapsed(startedAt);
   let status: RunStatus;
   if (opts.signal.aborted) {

@@ -1,6 +1,11 @@
-// `monkey export-cookies <name>` — open a monkey-owned local Chrome,
-// navigate to a cookie-jar target's URL, wait for the user to sign in
-// (or detect they already are), dump the resulting storageState as JSON.
+// `monkey auth <name>` — refresh authentication for a target. Polymorphic
+// by the target's auth mode:
+//
+//   cookie-jar  → open monkey-owned Chrome, capture cookies, push to BB
+//   password    → run the configured form-fill against BB
+//   none        → no-op (nothing to refresh)
+//
+// For cookie-jar targets:
 //
 // Why local Chrome (not Browserbase's Chrome): Google's bot detection is
 // hostile to data-center IPs. Signing in from your real Chrome with your
@@ -10,8 +15,8 @@
 //
 // Persistent profile: monkey owns a Chrome profile dir at
 // ~/.config/monkey-explorer/chrome-profile/. After your first sign-in
-// there, subsequent re-exports reuse the same Chrome session — you don't
-// re-do OAuth every export. Use --reset to wipe the profile (e.g. to
+// there, subsequent re-auths reuse the same Chrome session — you don't
+// re-do OAuth every refresh. Use --reset to wipe the profile (e.g. to
 // sign in as a different user).
 //
 // Auto-detect signed-in: after navigation, monkey checks the page state.
@@ -33,44 +38,50 @@ import { getChromeProfileDir, getCookieJarPathForTarget } from '../lib/state/pat
 import { isValidTargetName } from '../lib/state/path.js';
 import type { GlobalState } from '../lib/state/schema.js';
 
-export interface ExportCookiesOpts {
+export interface AuthOpts {
   targetName: string;
-  /** Override the output path. Default: ~/.config/monkey-explorer/cookie-jars/<name>.json */
+  /** cookie-jar only: override the output JSON path. */
   out?: string;
-  /** If the target doesn't exist, create it with this URL + cookie-jar auth-mode. */
+  /** cookie-jar only: if the target doesn't exist, create it with this URL. */
   url?: string;
-  /** Wipe the persistent Chrome profile dir before launching. Use this to
-   *  sign in as a different user, or to recover from a stuck profile lock. */
+  /** cookie-jar only: wipe the persistent Chrome profile before launching. */
   reset?: boolean;
-  /** Skip the auto bootstrap-auth that follows a successful export. Default
-   *  is to bootstrap immediately so cookies are live in the BB context.
-   *  Set this in CI / scripted flows where the bootstrap is run separately. */
+  /** Skip the auto bootstrap-auth at the end. CI / scripted flows. */
   skipBootstrap?: boolean;
-  /** Forwarded to bootstrap-auth — error rather than prompt for trust. */
+  /** Error rather than prompt for trust. */
   nonInteractive?: boolean;
 }
 
-export async function runExportCookies(opts: ExportCookiesOpts): Promise<number> {
+export async function runAuth(opts: AuthOpts): Promise<number> {
   if (!isValidTargetName(opts.targetName)) {
     log.fail(`Invalid target name "${opts.targetName}".`);
     return 1;
   }
 
   const state = await requireGlobalState();
-  let target = state.targets[opts.targetName];
+  const target = state.targets[opts.targetName];
 
-  // Two flows:
-  //  - existing cookie-jar target → refresh the file at its existing path
-  //  - missing target + --url provided → create cookie-jar target after export
-  //  - existing target with non-cookie-jar mode → error
-  if (target && target.authMode.kind !== 'cookie-jar') {
-    log.fail(
-      `Target "${opts.targetName}" exists but uses ${target.authMode.kind} auth.\n` +
-        `  export-cookies only refreshes cookie-jar targets. Run \`monkey target rm ${opts.targetName}\` first.`,
-    );
-    return 1;
+  // Dispatch by auth mode. Cookie-jar opens Chrome + captures + bootstraps;
+  // password just runs the form-fill against BB; none is a no-op.
+  if (target && target.authMode.kind === 'password') {
+    log.info(`Target "${opts.targetName}" uses password auth — running form-fill against BB.`);
+    if (opts.url || opts.reset || opts.out) {
+      log.warn(`  --url / --reset / --out only apply to cookie-jar targets; ignored.`);
+    }
+    const { runBootstrapAuth } = await import('./bootstrap-auth.js');
+    return runBootstrapAuth({
+      targetName: opts.targetName,
+      nonInteractive: opts.nonInteractive,
+    });
+  }
+  if (target && target.authMode.kind === 'none') {
+    log.info(`Target "${opts.targetName}" uses auth-mode "none" — nothing to refresh.`);
+    return 0;
   }
 
+  // From here on, we're in the cookie-jar branch (existing target with
+  // cookie-jar mode, OR a missing target that the user wants to create
+  // via --url).
   let navigationUrl: string;
   let outPath: string;
   if (target) {
@@ -80,7 +91,7 @@ export async function runExportCookies(opts: ExportCookiesOpts): Promise<number>
   } else {
     if (!opts.url) {
       log.fail(`Target "${opts.targetName}" doesn't exist. Pass --url to create one.`);
-      log.info(`  Example: monkey export-cookies ${opts.targetName} --url https://app.example.com`);
+      log.info(`  Example: monkey auth ${opts.targetName} --url https://app.example.com`);
       return 1;
     }
     try {

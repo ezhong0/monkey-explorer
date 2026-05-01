@@ -119,10 +119,6 @@ Examples:
   monkey runs
   monkey runs --since 7d
 
-Advanced (recovery):
-  monkey bootstrap-auth [--target <name>]   manual BB-context refresh
-                                            (rare — \`auth\` runs this for you)
-
 Per-subcommand help: \`monkey <subcommand> --help\`
 `;
 
@@ -300,23 +296,6 @@ via cookie-jar mode.
 (\`monkey export-cookies\` is also accepted as an alias.)
 `,
 
-  'bootstrap-auth': `monkey bootstrap-auth [--target <name>] — manual BB-context refresh.
-
-This is a low-level escape hatch. In normal use, \`monkey auth <name>\`
-runs bootstrap-auth automatically after refreshing your local cookies.
-You only need to invoke this directly when:
-  - You added a target with --skip-bootstrap and want to provision it now.
-  - The BB context got into a weird state and you want to re-push cookies
-    without re-exporting them locally.
-
-Usage:
-  monkey bootstrap-auth                    Use current target
-  monkey bootstrap-auth --target <name>    Use specific target
-
-Reuses the target's existing contextId if present, mints a new one if not.
-Runs the configured signIn flow (cookie-jar inject, password form fill, etc.).
-`,
-
   runs: `monkey runs — show active + recent runs across all targets.
 
 Usage:
@@ -361,6 +340,7 @@ async function main(argv: string[]): Promise<number> {
   // Aliases route to the new canonical key.
   const HELP_ALIASES: Record<string, string> = {
     'export-cookies': 'auth',
+    'bootstrap-auth': 'auth',
     configure: 'config',
     list: 'runs',
   };
@@ -417,22 +397,16 @@ async function main(argv: string[]): Promise<number> {
         const { runConfigure } = await import('./commands/configure.js');
         return runConfigure();
       }
-      case 'bootstrap-auth': {
-        const { runBootstrapAuth } = await import('./commands/bootstrap-auth.js');
-        return runBootstrapAuth({
-          targetName: args.target,
-          nonInteractive: Boolean(args['non-interactive']),
-        });
-      }
       case 'auth':
-      case 'export-cookies': {  // alias kept for muscle memory
-        const positionalName = args._[1];
+      case 'export-cookies':  // alias kept for muscle memory
+      case 'bootstrap-auth': {  // alias — bootstrap-auth was retired as a user-facing command
+        const positionalName = args._[1] ?? args.target;
         if (!positionalName) {
           process.stderr.write('Usage: monkey auth <target-name> [--url <url>] [--reset] [--skip-bootstrap]\n');
           return 1;
         }
-        const { runExportCookies } = await import('./commands/export-cookies.js');
-        return runExportCookies({
+        const { runAuth } = await import('./commands/auth.js');
+        return runAuth({
           targetName: positionalName,
           url: args.url,
           out: args.out,

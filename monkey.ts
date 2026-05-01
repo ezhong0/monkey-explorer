@@ -100,7 +100,7 @@ Run flags:
 
 Examples:
   monkey login
-  monkey target add tamarind-staging
+  monkey target add staging
   monkey "test the dashboard"
   monkey "test A" "test B" "test C"           # 3 missions in parallel
   monkey --target prod "test signup"

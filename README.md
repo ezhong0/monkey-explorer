@@ -4,7 +4,7 @@ AI-agent-driven exploratory testing for any web app. Add an app, write missions 
 
 ```bash
 npx github:ezhong0/monkey-explorer login
-npx github:ezhong0/monkey-explorer target add tamarind-staging
+npx github:ezhong0/monkey-explorer target add staging
 npx github:ezhong0/monkey-explorer "test the homepage"
 ```
 
@@ -48,7 +48,7 @@ Prompts for your Browserbase API key (project auto-discovered) + OpenAI API key 
 ### Per-app setup
 
 ```bash
-monkey target add tamarind-staging
+monkey target add staging
 ```
 
 Prompts for: app URL, auth type, sign-in URL + test credentials (for `ai-form`), then auto-runs `bootstrap-auth` to provision a Browserbase context cookie. The first added target also becomes your "current target."
@@ -138,13 +138,13 @@ $ monkey list
 
 ACTIVE (2):
   TARGET               DURATION   MISSION   LIVE-VIEW
-  tamarind-staging     [1m 23s]   test the dashboard           https://...
+  staging     [1m 23s]   test the dashboard           https://...
   prod                 [0m 45s]   test the settings page       https://...
 
 RECENT (3):
   TIME       TARGET               MISSION   DURATION  FINDINGS      REPLAY
-  20:15  ✓  tamarind-staging     test mobile responsiveness  4m 22s    3 findings    https://...
-  19:42  ✓  tamarind-staging     list sidebar nav items      2m 14s    8 findings    https://...
+  20:15  ✓  staging     test mobile responsiveness  4m 22s    3 findings    https://...
+  19:42  ✓  staging     list sidebar nav items      2m 14s    8 findings    https://...
   19:09  ✗  prod                 test job submission         0m 30s                  https://...
 ```
 
@@ -196,18 +196,18 @@ Single global file at `~/.config/monkey-explorer/config.json`:
     }
   },
   "targets": {
-    "tamarind-staging": {
-      "url": "https://app.tamarind.bio",
+    "staging": {
+      "url": "https://app.example.com",
       "authMode": {
         "kind": "ai-form",
-        "signInUrl": "https://app.tamarind.bio/sign-in"
+        "signInUrl": "https://app.example.com/sign-in"
       },
       "testCredentials": { "email": "...", "password": "..." },
       "contextId": "ctx_...",
       "lastUsed": "2026-04-30T17:00:00Z"
     }
   },
-  "currentTarget": "tamarind-staging"
+  "currentTarget": "staging"
 }
 ```
 

@@ -29,6 +29,7 @@ import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
+  AdjudicatorErrorKind,
   ConsoleEvent,
   Finding,
   MissionResult,
@@ -266,6 +267,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   // mission was aborted/timed-out — there's nothing to adjudicate over.
   let findings: Finding[] = liftedFindings;
   let adjudicatorError: string | null = null;
+  let adjudicatorErrorKind: AdjudicatorErrorKind | null = null;
   const haveTraceContent = rawActions.length > 0 || observations.length > 0;
   if (haveTraceContent && !agentError && !timer.fired() && !opts.signal.aborted) {
     try {
@@ -300,6 +302,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     } catch (err) {
       const ae = err as AdjudicatorError;
       adjudicatorError = sanitizeText(ae.message);
+      adjudicatorErrorKind = ae.kind;
       log.warn(`${prefix} adjudicator failed (${ae.kind}); shipping ${liftedFindings.length} deterministic findings only.`);
     }
   }
@@ -321,6 +324,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     status = {
       kind: 'adjudicator_failed',
       error: adjudicatorError,
+      errorKind: adjudicatorErrorKind ?? 'other',
       findings,
       ranForMs,
     };

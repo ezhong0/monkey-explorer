@@ -151,6 +151,7 @@ function buildTerminalFrontMatter(opts: {
         ranForMs: opts.status.ranForMs,
         findings_count: opts.findingsCount,
         error: sanitizeText(opts.status.error),
+        error_kind: opts.status.errorKind,
       };
     case 'errored':
       return {

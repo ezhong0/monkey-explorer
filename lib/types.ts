@@ -31,6 +31,12 @@ export const ORACLE_EVIDENCE_TYPES = ['network', 'console', 'dom', 'diff'] as co
 
 export type Tier = 'verified' | 'speculative';
 
+// Adjudicator failure kinds — surfaced in `adjudicator_failed` RunStatus and
+// JSON output so callers (Claude Code, CI) can distinguish transient quota
+// failures from schema/parse problems vs. unknown SDK errors. Mirrors
+// AdjudicatorError.kind in lib/adjudicate/run.ts.
+export type AdjudicatorErrorKind = 'rate_limit' | 'parse' | 'other';
+
 export interface Provenance {
   stepId: string;          // matches /^step_\d{4,}$/
   evidenceType: EvidenceType;
@@ -53,7 +59,7 @@ export type RunStatus =
   | { kind: 'completed'; findings: Finding[]; ranForMs: number; tokensUsed?: number }
   | { kind: 'timed_out'; findings: Finding[]; ranForMs: number }
   | { kind: 'exceeded_tokens'; findings: Finding[]; ranForMs: number }
-  | { kind: 'adjudicator_failed'; error: string; findings: Finding[]; ranForMs: number }         // deterministic findings still ship
+  | { kind: 'adjudicator_failed'; error: string; errorKind: AdjudicatorErrorKind; findings: Finding[]; ranForMs: number }         // deterministic findings still ship
   | { kind: 'errored'; error: string; ranForMs: number }
   | { kind: 'not_started'; reason: string }
   | { kind: 'aborted'; ranForMs: number };

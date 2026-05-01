@@ -12,6 +12,7 @@
 // final JSON anyway.
 
 import { sanitizeText } from '../findings/sanitize.js';
+import * as logStderr from '../log/stderr.js';
 import type { Browserbase } from '../bb/client.js';
 import type { ConsoleEvent, NetworkFailure } from '../types.js';
 
@@ -45,32 +46,51 @@ export async function fetchSessionEvents(opts: {
 
   const consoleErrors: ConsoleEvent[] = [];
   const networkFailures: NetworkFailure[] = [];
+  let consoleDropped = 0;
+  let networkDropped = 0;
 
   for (const log of logs) {
-    if (consoleErrors.length >= MAX_EVENTS && networkFailures.length >= MAX_EVENTS) break;
-
     switch (log.method) {
       case 'Runtime.consoleAPICalled': {
         const event = parseConsoleApiCalled(log, opts.targetOrigin);
-        if (event && consoleErrors.length < MAX_EVENTS) consoleErrors.push(event);
+        if (!event) break;
+        if (consoleErrors.length < MAX_EVENTS) consoleErrors.push(event);
+        else consoleDropped++;
         break;
       }
       case 'Runtime.exceptionThrown': {
         const event = parseExceptionThrown(log, opts.targetOrigin);
-        if (event && consoleErrors.length < MAX_EVENTS) consoleErrors.push(event);
+        if (!event) break;
+        if (consoleErrors.length < MAX_EVENTS) consoleErrors.push(event);
+        else consoleDropped++;
         break;
       }
       case 'Network.responseReceived': {
         const event = parseResponseReceived(log, opts.targetOrigin);
-        if (event && networkFailures.length < MAX_EVENTS) networkFailures.push(event);
+        if (!event) break;
+        if (networkFailures.length < MAX_EVENTS) networkFailures.push(event);
+        else networkDropped++;
         break;
       }
       case 'Network.loadingFailed': {
         const event = parseLoadingFailed(log, opts.targetOrigin);
-        if (event && networkFailures.length < MAX_EVENTS) networkFailures.push(event);
+        if (!event) break;
+        if (networkFailures.length < MAX_EVENTS) networkFailures.push(event);
+        else networkDropped++;
         break;
       }
     }
+  }
+
+  if (consoleDropped > 0) {
+    logStderr.warn(
+      `fetchSessionEvents: capped console errors at ${MAX_EVENTS}; ${consoleDropped} additional event(s) dropped. Findings may be incomplete.`,
+    );
+  }
+  if (networkDropped > 0) {
+    logStderr.warn(
+      `fetchSessionEvents: capped network failures at ${MAX_EVENTS}; ${networkDropped} additional event(s) dropped. Findings may be incomplete.`,
+    );
   }
 
   return { consoleErrors, networkFailures };

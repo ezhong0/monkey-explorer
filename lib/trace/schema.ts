@@ -23,9 +23,10 @@ import { z } from 'zod';
 
 // ─── Step ID convention ──────────────────────────────────────────────────────
 //
-// Zero-padded 4-digit sequence prefix `step_NNNN` so step IDs sort by string
-// compare and are easy to grep / debug. Bump padding to 5 if a mission ever
-// runs ≥10000 steps (we're at maxSteps=60 today).
+// Zero-padded to 4 digits at write time (`makeStepId`) so step IDs sort by
+// string compare and are easy to grep / debug. Regex permits ≥4 digits so
+// padding doesn't have to grow on long missions; today's maxSteps=60 is well
+// inside 4-digit range.
 
 export const STEP_ID_RE = /^step_\d{4,}$/;
 export const StepIdSchema = z.string().regex(STEP_ID_RE);

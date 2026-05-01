@@ -119,14 +119,17 @@ export const DefaultsSchema = z.object({
 // `contextId` is empty string until bootstrap-auth runs; non-empty after.
 // `lastSignedInAt` is empty string until signIn post-check confirms success;
 // only THEN is the target truly bootstrapped. Used by `targetIsBootstrapped`.
-// `lastUsed` is best-effort; concurrent writes may lose updates.
+// `lastUsed` is empty until first run. Datetime-or-empty caught a
+// past bug where a Date object was assigned without `.toISOString()`.
+
+const EmptyOrDatetimeSchema = z.union([z.literal(''), z.string().datetime()]);
 
 export const TargetSchema = z.object({
   url: z.string().url(),
   authMode: AuthModeSchema,
   contextId: z.string(),
-  lastSignedInAt: z.string(),
-  lastUsed: z.string(),
+  lastSignedInAt: EmptyOrDatetimeSchema,
+  lastUsed: EmptyOrDatetimeSchema,
 });
 
 // ─── Top-level state ───

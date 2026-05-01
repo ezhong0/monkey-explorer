@@ -9,7 +9,13 @@
 // instead of dumping the whole extraction.
 
 import { z } from 'zod';
-import { StepIdSchema } from '../trace/schema.js';
+import * as log from '../log/stderr.js';
+
+// Provenance can cite either a trace step (step_NNNN) OR a synthetic lifter
+// step (step_console_NNNN, step_network_NNNN). The Zod schema accepts both
+// so toJsonSchema() produces a JSON Schema the adjudicator can use as-is.
+const PROVENANCE_STEP_ID_RE = /^(step_\d{4,}|step_(console|network)_\d{4,})$/;
+const ProvenanceStepIdSchema = z.string().regex(PROVENANCE_STEP_ID_RE);
 
 export const SeveritySchema = z.preprocess((v) => {
   if (typeof v !== 'string') return v;
@@ -32,7 +38,7 @@ export const EvidenceTypeSchema = z.enum([
 ]);
 
 export const ProvenanceSchema = z.object({
-  stepId: StepIdSchema,
+  stepId: ProvenanceStepIdSchema,
   evidenceType: EvidenceTypeSchema,
 });
 
@@ -45,6 +51,24 @@ export const AdjudicatedFindingSchema = z.preprocess(
   (v) => {
     if (v === null || typeof v !== 'object') return v;
     const obj = v as Record<string, unknown>;
+    const aliases: string[] = [];
+    if (obj.severity == null && (obj.level != null || obj.priority != null)) {
+      aliases.push(obj.level != null ? 'level→severity' : 'priority→severity');
+    }
+    if (obj.summary == null && (obj.title != null || obj.name != null)) {
+      aliases.push(obj.title != null ? 'title→summary' : 'name→summary');
+    }
+    if (obj.details == null) {
+      if (obj.description != null) aliases.push('description→details');
+      else if (obj.explanation != null) aliases.push('explanation→details');
+      else if (obj.text != null) aliases.push('text→details');
+    }
+    if (obj.provenance == null && (obj.evidence != null || obj.cites != null)) {
+      aliases.push(obj.evidence != null ? 'evidence→provenance' : 'cites→provenance');
+    }
+    if (aliases.length > 0) {
+      log.warn(`AdjudicatedFinding: model emitted alias key(s) ${aliases.join(', ')}; check whether prompt or schema needs updating.`);
+    }
     return {
       severity: obj.severity ?? obj.level ?? obj.priority,
       summary: obj.summary ?? obj.title ?? obj.name ?? '',

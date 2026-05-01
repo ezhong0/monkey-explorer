@@ -4,7 +4,7 @@
 // Schema is intended to be stable. If we ever break it, bump the
 // `monkey_version` field and document the change.
 
-import type { Finding, MissionResult, RunStatus } from '../types.js';
+import type { AdjudicatorErrorKind, Finding, MissionResult, RunStatus } from '../types.js';
 
 export type Verdict = 'pass' | 'fail' | 'inconclusive';
 
@@ -27,6 +27,9 @@ export interface JsonOutputMission {
   networkFailures: unknown[];
   tokensUsed: number | null;
   error: string | null;
+  /** Populated when status === 'adjudicator_failed'. Lets CI/Claude Code
+   *  decide whether the failure is retryable (rate_limit) or not (parse). */
+  adjudicatorErrorKind: AdjudicatorErrorKind | null;
   reason: string | null;
   sessionId: string | null;
   replayUrl: string | null;
@@ -124,6 +127,7 @@ function toJsonMission(r: MissionResult, includeSpeculative: boolean): JsonOutpu
     networkFailures: r.networkFailures,
     tokensUsed: tokensOf(r.status),
     error: errorOf(r.status),
+    adjudicatorErrorKind: r.status.kind === 'adjudicator_failed' ? r.status.errorKind : null,
     reason: reasonOf(r.status),
     sessionId: r.sessionId,
     replayUrl: r.replayUrl,

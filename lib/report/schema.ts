@@ -68,6 +68,7 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     ranForMs: z.number(),
     findings_count: z.number().int().nonnegative(),
     error: z.string(),
+    error_kind: z.enum(['rate_limit', 'parse', 'other']),
   }),
   z.object({
     ...Common,
@@ -97,6 +98,19 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
 ]);
 
 export type ReportFrontMatter = z.infer<typeof ReportFrontMatterSchema>;
+
+// Type-level exhaustiveness guard — adding a new RunStatus variant must
+// also add the corresponding ReportFrontMatterSchema variant. Mirrors the
+// guard in lib/types.ts:73-80 for the RunStatus union.
+import type { RunStatus } from '../types.js';
+type _ReportFrontMatterExhaustivenessCheck = Exclude<
+  RunStatus['kind'],
+  ReportFrontMatter['status']
+> extends never
+  ? true
+  : { error: 'ReportFrontMatterSchema missing a status variant from RunStatus' };
+const _reportFrontMatterOk: _ReportFrontMatterExhaustivenessCheck = true;
+void _reportFrontMatterOk;
 
 // Body sections live as markdown content — findings rendered inline; the
 // front matter has only `findings_count` for `monkey list`'s row display.

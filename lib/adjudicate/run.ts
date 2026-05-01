@@ -11,6 +11,7 @@
 //   - Other errors       → throw, runMission marks status=adjudicator_failed
 
 import Anthropic from '@anthropic-ai/sdk';
+import { toJsonSchema } from '@browserbasehq/stagehand';
 import { z } from 'zod';
 import {
   AdjudicatedFindingsListSchema,
@@ -110,51 +111,11 @@ function buildUserPrompt(trace: Trace, liftedFindings: Finding[]): string {
   ].join('\n');
 }
 
-const ZOD_TO_JSON_SCHEMA = {
-  type: 'object',
-  properties: {
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          severity: {
-            type: 'string',
-            enum: ['critical', 'high', 'medium', 'low', 'observation'],
-          },
-          summary: { type: 'string', minLength: 1 },
-          details: { type: 'string' },
-          provenance: {
-            type: 'array',
-            minItems: 1,
-            items: {
-              type: 'object',
-              properties: {
-                stepId: {
-                  type: 'string',
-                  // Anchored alternation: trace step OR lifter step.
-                  // Trace:  step_NNNN (zero-padded ≥4 digits).
-                  // Lifter: step_console_NNNN or step_network_NNNN.
-                  // Anything else fails the schema before validate.ts even
-                  // runs. The post-parse cross-reference still verifies that
-                  // the cited step actually exists in the trace / lifter set.
-                  pattern: '^(step_\\d{4,}|step_(console|network)_\\d{4,})$',
-                },
-                evidenceType: {
-                  type: 'string',
-                  enum: ['network', 'console', 'observation', 'screenshot', 'dom', 'diff'],
-                },
-              },
-              required: ['stepId', 'evidenceType'],
-            },
-          },
-        },
-        required: ['severity', 'summary', 'details', 'provenance'],
-      },
-    },
-  },
-  required: ['findings'],
-} as const;
+// Derived from the Zod schema so the two can't drift. The post-parse
+// cross-reference (validate.ts) still verifies the cited step actually
+// exists in the trace / lifter set — schema enforces shape, validator
+// enforces references.
+const ADJUDICATOR_TOOL_INPUT_SCHEMA = toJsonSchema(AdjudicatedFindingsListSchema);
 
 interface AdjudicatorOptions {
   apiKey: string;
@@ -191,7 +152,7 @@ async function callAdjudicator(
       {
         name: ADJUDICATOR_TOOL_NAME,
         description: 'Submit the final adjudicated findings list.',
-        input_schema: ZOD_TO_JSON_SCHEMA as Anthropic.Tool.InputSchema,
+        input_schema: ADJUDICATOR_TOOL_INPUT_SCHEMA as Anthropic.Tool.InputSchema,
       },
     ],
     tool_choice: { type: 'tool', name: ADJUDICATOR_TOOL_NAME },

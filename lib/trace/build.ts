@@ -15,9 +15,11 @@
 // into the action step whose timestamp window covers them. If no action
 // covers an event, it floats unattached (still cited via lifter stepIds).
 
+import { z } from 'zod';
 import type {
   RecordedObservation,
 } from '../stagehand/agent.js';
+import * as log from '../log/stderr.js';
 import type { ConsoleEvent, NetworkFailure } from '../types.js';
 import {
   buildStepIndex,
@@ -29,13 +31,22 @@ import {
   type TraceStep,
 } from './schema.js';
 
-interface StagehandActionRaw {
-  description?: string;
-  method?: string;
-  reasoning?: string;
-  pageUrl?: string;
-  timestamp?: number; // Stagehand sets via Date.now() per v3CuaAgentHandler:104
-}
+// Defensive Zod schema for the action shape Stagehand v3.3.0 emits. We only
+// read a few fields; anything else is allowed (`.passthrough()`) so a
+// future Stagehand minor doesn't break trace building. If a runtime action
+// fails this loose schema, it's dropped with a warning rather than poisoning
+// the trace.
+const StagehandActionRawSchema = z
+  .object({
+    description: z.string().optional(),
+    method: z.string().optional(),
+    reasoning: z.string().optional(),
+    pageUrl: z.string().optional(),
+    timestamp: z.number().optional(), // Stagehand sets via Date.now()
+  })
+  .passthrough();
+
+type StagehandActionRaw = z.infer<typeof StagehandActionRawSchema>;
 
 export interface BuildTraceInput {
   header: Omit<TraceHeader, 'type' | 'schemaVersion'>;
@@ -52,10 +63,26 @@ export function buildTrace(input: BuildTraceInput): Trace {
     ...input.header,
   };
 
-  // Convert Stagehand actions to ActionSteps. Bucket events into each
-  // step's window (timestamp ≥ this.timestamp AND < next.timestamp).
-  const sortedActions: StagehandActionRaw[] = input.rawActions
-    .filter((a): a is StagehandActionRaw => typeof a === 'object' && a !== null)
+  // Convert Stagehand actions to ActionSteps. Each raw action goes through
+  // Zod parse first; failures are dropped with a warning rather than
+  // poisoning the trace. Then bucket events into each step's window
+  // (timestamp ≥ this.timestamp AND < next.timestamp).
+  const validatedActions: StagehandActionRaw[] = [];
+  let rejectedActionCount = 0;
+  for (const a of input.rawActions) {
+    const parsed = StagehandActionRawSchema.safeParse(a);
+    if (parsed.success) {
+      validatedActions.push(parsed.data);
+    } else {
+      rejectedActionCount++;
+    }
+  }
+  if (rejectedActionCount > 0) {
+    log.warn(
+      `trace builder: dropped ${rejectedActionCount} Stagehand action(s) that failed schema validation. Stagehand SDK shape may have drifted.`,
+    );
+  }
+  const sortedActions: StagehandActionRaw[] = validatedActions
     .slice()
     .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
 

@@ -2,10 +2,17 @@
 //
 // Returns a discriminated ProbeResult. Caller (runMission) decides what
 // to do — auto-reauth on `sign-in-page`, surface error otherwise.
+//
+// Stage 0 (URL policy): `target` is user-controlled (config file). Before
+// any HTTP egress, validate the URL: scheme must be http/https; hostname
+// must not resolve to a private/loopback/link-local IP. Defends against
+// SSRF (a compromised config aimed at AWS metadata, internal LAN, etc.).
+// See lib/probe/urlPolicy.ts.
 
 import type { Page } from 'playwright-core';
 import type { Stagehand } from '@browserbasehq/stagehand';
 import { isSignedIn } from './markerDetect.js';
+import { validateTargetUrl } from './urlPolicy.js';
 import type { ProbeResult } from '../types.js';
 
 export async function probe(opts: {
@@ -15,6 +22,13 @@ export async function probe(opts: {
   /** When 'none', skips the auth marker check — there's no auth to verify. */
   authModeKind?: string;
 }): Promise<ProbeResult> {
+  // Stage 0: URL policy. Reject private-IP / non-http(s) targets before
+  // any egress happens.
+  const policy = await validateTargetUrl(opts.target);
+  if (!policy.ok) {
+    return { kind: 'unreachable', details: `URL policy: ${policy.reason}` };
+  }
+
   // Stage 1: HTTP reachability via fetch (fast, no browser overhead).
   try {
     const res = await fetch(opts.target, {

@@ -130,7 +130,16 @@ const ZOD_TO_JSON_SCHEMA = {
             items: {
               type: 'object',
               properties: {
-                stepId: { type: 'string', pattern: '^step_' },
+                stepId: {
+                  type: 'string',
+                  // Anchored alternation: trace step OR lifter step.
+                  // Trace:  step_NNNN (zero-padded ≥4 digits).
+                  // Lifter: step_console_NNNN or step_network_NNNN.
+                  // Anything else fails the schema before validate.ts even
+                  // runs. The post-parse cross-reference still verifies that
+                  // the cited step actually exists in the trace / lifter set.
+                  pattern: '^(step_\\d{4,}|step_(console|network)_\\d{4,})$',
+                },
                 evidenceType: {
                   type: 'string',
                   enum: ['network', 'console', 'observation', 'screenshot', 'dom', 'diff'],

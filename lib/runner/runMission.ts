@@ -15,14 +15,16 @@ import { randomUUID } from 'node:crypto';
 import * as log from '../log/stderr.js';
 import { computeCost, formatCostSummary } from '../cost/compute.js';
 import { probe } from '../probe/probe.js';
-import { sanitizeFinding, sanitizeText } from '../findings/sanitize.js';
+import { sanitizeText } from '../findings/sanitize.js';
 import { writeReportInitial, writeReportTerminal } from '../report/write.js';
 import { startWallClockTimer } from './caps.js';
 import { createSession, type MonkeySession } from '../bb/session.js';
 import { createStagehand } from '../stagehand/adapter.js';
-import { executeAgent } from '../stagehand/agent.js';
-import { extractFindings, isStagehandHandleClosedError } from '../stagehand/extract.js';
+import { executeAgent, type RecordedObservation } from '../stagehand/agent.js';
+import { liftDeterministicFindings } from '../observe/promote.js';
 import { pickModelApiKey } from '../stagehand/modelKey.js';
+import { buildTrace } from '../trace/build.js';
+import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
@@ -53,6 +55,8 @@ export interface RunMissionOpts {
   caps: Caps;
   stagehandModel: string;
   agentModel: string;
+  /** Optional override; falls back to agentModel when undefined. */
+  adjudicatorModel?: string;
   credentials: Credentials;
   signal: AbortSignal;
   // Auto-reauth callback — runMission asks the caller to refresh the
@@ -131,6 +135,9 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       startedAt,
       status: { kind: 'errored', error: (err as Error).message, ranForMs: elapsed(startedAt) },
       findings: [],
+      observations: [],
+      consoleErrors: [],
+      networkFailures: [],
     });
   }
 
@@ -161,6 +168,9 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
         startedAt,
         status: { kind: 'not_started', reason },
         findings: [],
+        observations: [],
+        consoleErrors: [],
+        networkFailures: [],
       });
     }
 
@@ -174,6 +184,9 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       startedAt,
       status: { kind: 'errored', error: (err as Error).message, ranForMs: elapsed(startedAt) },
       findings: [],
+      observations: [],
+      consoleErrors: [],
+      networkFailures: [],
     });
   }
 
@@ -181,9 +194,8 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   let agentSucceeded = false;
   let tokensUsed: number | undefined;
   let agentError: { kind: RunStatus['kind']; message: string } | null = null;
-  // Findings emitted by the agent as it explored (CUA path only; empty
-  // on the AISDK/DOM path — extract picks them up there).
-  let findings: Finding[] = [];
+  let observations: RecordedObservation[] = [];
+  let rawActions: unknown[] = [];
 
   const timer = startWallClockTimer({
     wallClockMs: opts.caps.wallClockMs,
@@ -208,7 +220,8 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     });
     agentSucceeded = result.success;
     tokensUsed = result.tokensUsed;
-    findings = result.findings; // already sanitized in agent.ts
+    observations = result.observations;
+    rawActions = result.rawActions;
     if (result.error) {
       if (timer.fired()) {
         agentError = { kind: 'timed_out', message: result.error.message };
@@ -219,33 +232,78 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       }
     }
   } finally {
-    timer.clear(); // clear before extract() so a late-fire doesn't kill it
+    timer.clear(); // clear before downstream LLM calls so a late-fire doesn't kill them
   }
 
-  // Post-hoc extract fallback: only runs when the agent emitted no inline
-  // findings (i.e. the AISDK/DOM path, which can't reliably advertise
-  // user tools to the model). Same handle-closed-degrade behavior as before.
-  let extractError: string | null = null;
-  if (
-    findings.length === 0 &&
-    !agentError &&
-    !timer.fired() &&
-    !opts.signal.aborted
-  ) {
+  // Fetch console + network events from Browserbase's server-side log capture.
+  // Best-effort — empty if session was released too quickly.
+  const targetOrigin = (() => {
     try {
-      const result = await extractFindings(stagehandHandle.stagehand);
-      findings = result.findings.map(sanitizeFinding);
+      return new URL(opts.target.url).origin;
+    } catch {
+      return opts.target.url;
+    }
+  })();
+  const collectedEvents = session
+    ? await fetchSessionEvents({
+        bb: opts.bb,
+        sessionId: session.id,
+        targetOrigin,
+      })
+    : { consoleErrors: [], networkFailures: [] };
+
+  // Deterministic-finding lifter: console errors + 4xx/5xx network failures
+  // become first-class `verified` findings. No LLM judgment.
+  const { findings: liftedFindings, introducedStepIds: liftedStepIdsList } = liftDeterministicFindings({
+    consoleErrors: collectedEvents.consoleErrors,
+    networkFailures: collectedEvents.networkFailures,
+  });
+
+  // Adjudicator pass: reads the trace + lifted findings, emits additional
+  // findings with cited provenance and rubric-derived severity. Skipped if
+  // the explorer failed badly (no actions, no observations) or if the
+  // mission was aborted/timed-out — there's nothing to adjudicate over.
+  let findings: Finding[] = liftedFindings;
+  let adjudicatorError: string | null = null;
+  const haveTraceContent = rawActions.length > 0 || observations.length > 0;
+  if (haveTraceContent && !agentError && !timer.fired() && !opts.signal.aborted) {
+    try {
+      const trace = buildTrace({
+        header: {
+          missionId: opts.invocationId,
+          mission: opts.mission,
+          target: opts.target.url,
+          startedAt: startedAt.toISOString(),
+          agentModel: opts.agentModel,
+        },
+        rawActions,
+        observations,
+        consoleErrors: collectedEvents.consoleErrors,
+        networkFailures: collectedEvents.networkFailures,
+      });
+
+      const adjModel = opts.adjudicatorModel ?? opts.agentModel;
+      const useAzureForAdj = adjModel.startsWith('anthropic/') && !!opts.credentials.anthropicBaseURL;
+      const adjModelName = useAzureForAdj ? adjModel.replace(/^anthropic\//, '') : adjModel;
+
+      const adjudicated = await runAdjudicator({
+        apiKey: pickModelApiKey(adjModel, opts.credentials),
+        baseURL: useAzureForAdj ? opts.credentials.anthropicBaseURL : undefined,
+        model: adjModelName,
+        trace,
+        liftedFindings,
+        liftedStepIds: new Set(liftedStepIdsList),
+      });
+
+      findings = [...liftedFindings, ...adjudicated];
     } catch (err) {
-      if (isStagehandHandleClosedError(err)) {
-        log.warn(
-          `${prefix} extract skipped (Stagehand handle closed after agent.execute). ` +
-            `Mission completed but findings unavailable. See replay: ${session!.replayUrl}`,
-        );
-      } else {
-        extractError = sanitizeText((err as Error).message);
-      }
+      const ae = err as AdjudicatorError;
+      adjudicatorError = sanitizeText(ae.message);
+      log.warn(`${prefix} adjudicator failed (${ae.kind}); shipping ${liftedFindings.length} deterministic findings only.`);
     }
   }
+  let extractError: string | null = null;
+  void extractError; // legacy, retired with the extract path
 
   // Build terminal status. Note: handle-closed-during-extract is treated as
   // a successful mission (the agent did its work; findings extraction is a
@@ -260,8 +318,14 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     status = { kind: 'exceeded_tokens', findings, ranForMs };
   } else if (agentError) {
     status = { kind: 'errored', error: sanitizeText(agentError.message), ranForMs };
-  } else if (extractError) {
-    status = { kind: 'extract_failed', error: extractError, ranForMs };
+  } else if (adjudicatorError) {
+    // Mission completed; adjudicator failed. Deterministic findings still ship.
+    status = {
+      kind: 'adjudicator_failed',
+      error: adjudicatorError,
+      findings,
+      ranForMs,
+    };
   } else {
     void agentSucceeded;
     status = { kind: 'completed', findings, ranForMs, tokensUsed };
@@ -275,6 +339,9 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     startedAt,
     status,
     findings,
+    observations,
+    consoleErrors: collectedEvents.consoleErrors,
+    networkFailures: collectedEvents.networkFailures,
   });
 }
 
@@ -292,32 +359,17 @@ async function finalize(
     startedAt: Date;
     status: RunStatus;
     findings: Finding[];
+    observations: RecordedObservation[];
+    consoleErrors: ConsoleEvent[];
+    networkFailures: NetworkFailure[];
   },
 ): Promise<MissionResult> {
   const finishedAt = new Date();
   const sessionId = ctx.session?.id ?? '';
   const replayUrl = ctx.session?.replayUrl ?? '';
-  const targetOrigin = (() => {
-    try {
-      return new URL(opts.target.url).origin;
-    } catch {
-      return opts.target.url;
-    }
-  })();
-
-  // Fetch console + network events from Browserbase's server-side log
-  // capture. Best-effort — empty if session was released too quickly.
-  let consoleErrors: ConsoleEvent[] = [];
-  let networkFailures: NetworkFailure[] = [];
-  if (sessionId) {
-    const collected = await fetchSessionEvents({
-      bb: opts.bb,
-      sessionId,
-      targetOrigin,
-    });
-    consoleErrors = collected.consoleErrors;
-    networkFailures = collected.networkFailures;
-  }
+  const consoleErrors = ctx.consoleErrors;
+  const networkFailures = ctx.networkFailures;
+  void ctx.observations; // Phase 4/6 will surface these in the report
 
   // Write terminal report
   let costSummary: string | undefined;

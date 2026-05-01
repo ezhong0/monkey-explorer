@@ -2,21 +2,21 @@
 //
 // Two paths, picked by model:
 //   - CUA-capable Anthropic model (claude-sonnet/opus/haiku-*): runs in
-//     `mode: "cua"` with an inline `report_finding` tool. The model emits
-//     findings as it explores; no post-hoc extract LLM call needed.
-//   - Anything else (e.g. openai/gpt-5.5): runs in default `mode: "dom"`
-//     without inline tools. Findings come from the post-hoc extract
-//     instead (see lib/stagehand/extract.ts). The AISDK/DOM path has a
-//     hardcoded `<tools>` system-prompt block that doesn't advertise user
-//     tools, so models reliably ignore them there.
+//     `mode: "cua"` with an inline `record_observation` tool. The model
+//     emits NEUTRAL observations as it explores — it does NOT decide
+//     severity. The post-mission adjudicator pass (lib/adjudicate/) reads
+//     observations + actions + console/network events and produces actual
+//     findings with cited provenance.
+//   - Anything else (e.g. openai/gpt-5.5): runs in default `mode: "dom"`.
+//     Stagehand's AISDK path doesn't advertise user tools in the prompt's
+//     `<tools>` block, so observations would never be recorded. The
+//     non-CUA path collects no observations; findings come solely from
+//     the deterministic lifter (console/network) + adjudicator over
+//     Stagehand's returned `actions[]`.
 //
 // Why Anthropic-only for the CUA path: Stagehand 3.3.0's OpenAICUAClient
 // passes tool.inputSchema raw as `parameters` (no toJsonSchema conversion),
-// so OpenAI receives a malformed tool definition and the model calls
-// report_finding with empty args. AnthropicCUAClient does run
-// toJsonSchema(), so Zod schemas work correctly. We had a workaround for
-// the OpenAI bug but committed to Anthropic for cleaner code; if upstream
-// fixes OpenAICUAClient, it can be re-added by extending CUA_MODEL_PATTERNS.
+// so OpenAI receives a malformed tool definition.
 //
 // Stagehand v3's agent.execute does NOT accept AbortSignal. Our `signal`
 // param propagates SIGINT to other phases of runMission only;
@@ -28,17 +28,27 @@
 
 import { tool, type Stagehand } from '@browserbasehq/stagehand';
 import { z } from 'zod';
-import { sanitizeFinding } from '../findings/sanitize.js';
-import type { Finding } from '../types.js';
+import { sanitizeText } from '../findings/sanitize.js';
+
+/** Neutral observation recorded by the explorer mid-mission. No severity,
+ *  no judgment — adjudicator decides if it indicates a finding. */
+export interface RecordedObservation {
+  text: string;
+  /** Best-effort: the action index closest to when this observation fired.
+   *  Used to associate the observation to a step in the trace. */
+  recordedAt: string; // ISO timestamp
+}
 
 export interface AgentResult {
   success: boolean;
   message: string;
   stepsTaken: number;
   tokensUsed?: number;
-  /** Findings emitted by the model via the inline `report_finding` tool.
-   *  Empty when running on the non-CUA path (extract picks them up there). */
-  findings: Finding[];
+  /** Observations the explorer recorded via the `record_observation` tool. */
+  observations: RecordedObservation[];
+  /** Stagehand's raw actions[] from agent.execute. Used by the trace writer
+   *  to build action steps; passed through opaquely. */
+  rawActions: unknown[];
   error?: { kind: 'timeout' | 'rate_limit' | 'other'; message: string };
 }
 
@@ -50,20 +60,15 @@ function isCuaCapable(modelName: string): boolean {
   return CUA_MODEL_PATTERNS.some((re) => re.test(modelName));
 }
 
-const REPORT_FINDING_DESCRIPTION =
-  'Record a bug, polish issue, or notable observation discovered during exploration. Call this AS YOU EXPLORE — every time you notice something worth flagging — instead of waiting until the end. Calling it does not stop the mission. ALWAYS provide all three fields: severity, summary, details.';
+const RECORD_OBSERVATION_DESCRIPTION =
+  'Record a NEUTRAL observation about something you noticed during exploration. Use this to flag anything that might be worth a human reviewing — a bug, an empty state, a confusing UI, a slow response, an unexpected error, anything notable. Do NOT assign severity or label things as broken; just describe what you saw factually. Call this AS YOU EXPLORE — don\'t batch observations until the end. Calling it does not stop the mission. The post-mission adjudicator decides which observations represent real findings.';
 
-const REPORT_FINDING_SCHEMA = z.object({
-  severity: z
-    .enum(['critical', 'high', 'medium', 'low', 'observation'])
-    .describe(
-      'critical = blocks core flows or data corruption; high = significant bug; medium = workaround exists but UX clearly degraded; low = visual / polish; observation = not a bug, worth noting',
-    ),
-  summary: z.string().min(1).describe('One-line headline. Concrete, not vague.'),
-  details: z
+const RECORD_OBSERVATION_SCHEMA = z.object({
+  text: z
     .string()
+    .min(1)
     .describe(
-      'Reproduction steps, expected vs actual, any error messages observed. Concrete enough that a human can verify.',
+      'Concrete factual description of what you observed. Examples: "The Save button shows a loading spinner for 8 seconds before responding"; "Clicking the avatar in the top-right opens a menu with Logout, Settings, Help"; "The search box accepted my input but returned no results for a query I expected to match". Avoid words like "broken", "bug", "high severity" — leave judgment to the adjudicator.',
     ),
 });
 
@@ -104,30 +109,28 @@ export async function executeAgent(opts: {
     ? opts.agentModel.replace(/^anthropic\//, '')
     : opts.agentModel;
 
-  // Findings emitted via the inline tool (CUA path only). Closure-captured
+  // Observations emitted via the inline tool (CUA path only). Closure-captured
   // and read after agent.execute returns.
-  const collected: Finding[] = [];
-  const reportFinding = tool({
-    description: REPORT_FINDING_DESCRIPTION,
-    inputSchema: REPORT_FINDING_SCHEMA,
+  const observations: RecordedObservation[] = [];
+  const recordObservation = tool({
+    description: RECORD_OBSERVATION_DESCRIPTION,
+    inputSchema: RECORD_OBSERVATION_SCHEMA,
     execute: async (input) => {
-      collected.push(sanitizeFinding(input as Finding));
+      observations.push({
+        text: sanitizeText(input.text),
+        recordedAt: new Date().toISOString(),
+      });
       return { ok: true };
     },
   });
 
-  // Custom system prompt. In Stagehand 3.3.0, agent.execute renders
-  // `systemPrompt` inside a <customInstructions> block alongside the default
-  // tool guidance — additive, not a replacement. We use it to make
-  // report_finding visible at the prompt level (the default <tools> XML
-  // block lists only built-in Stagehand tools).
   const systemPrompt = [
     'You are an exploratory testing agent for a web app. Constraints:',
     '- Stay within the target app domain. Do not navigate to external URLs.',
     '- Do not perform destructive actions (delete account, deactivate, transfer funds, etc.) unless the mission explicitly directs them.',
     '- When the mission is complete or you have run out of useful actions, stop.',
     useCua
-      ? '\nWhile exploring, call the `report_finding` tool whenever you observe a bug, polish issue, or anything worth flagging for human review. Report findings as you find them — do not wait until the end. The mission only ends when you stop, not when you call report_finding.'
+      ? '\nWhile exploring, call the `record_observation` tool whenever you notice something potentially interesting — even if you\'re not sure it\'s a bug. Describe what you saw factually; do NOT assign severity or label things as broken. The post-mission adjudicator will decide which observations represent real findings. Record observations AS YOU EXPLORE; don\'t batch them.'
       : '',
   ]
     .filter(Boolean)
@@ -140,8 +143,6 @@ export async function executeAgent(opts: {
       ...(useAzure
         ? {
             baseURL: opts.agentBaseURL,
-            // Bypass Stagehand's model-name → provider lookup, since
-            // Azure deployment names aren't in modelToAgentProviderMap.
             provider: 'anthropic',
           }
         : {}),
@@ -150,7 +151,7 @@ export async function executeAgent(opts: {
     ...(useCua
       ? {
           mode: 'cua' as const,
-          tools: { report_finding: reportFinding },
+          tools: { record_observation: recordObservation },
         }
       : {}),
   });
@@ -160,7 +161,8 @@ export async function executeAgent(opts: {
       success: false,
       message: 'Aborted before agent started',
       stepsTaken: 0,
-      findings: [],
+      observations: [],
+      rawActions: [],
       error: { kind: 'timeout', message: 'aborted' },
     };
   }
@@ -181,23 +183,25 @@ export async function executeAgent(opts: {
         ? usage.input_tokens + usage.output_tokens
         : undefined;
 
-    const actionsLen = Array.isArray((result as { actions?: unknown[] }).actions)
-      ? (result as { actions: unknown[] }).actions.length
-      : 0;
+    const actions = Array.isArray((result as { actions?: unknown[] }).actions)
+      ? (result as { actions: unknown[] }).actions
+      : [];
 
     return {
       success: result.success ?? false,
       message: result.message ?? '',
-      stepsTaken: actionsLen,
+      stepsTaken: actions.length,
       tokensUsed: typeof tokensUsed === 'number' ? tokensUsed : undefined,
-      findings: collected,
+      observations,
+      rawActions: actions,
     };
   } catch (err) {
     return {
       success: false,
       message: '',
       stepsTaken: 0,
-      findings: collected, // surface anything captured before the failure
+      observations, // surface anything captured before the failure
+      rawActions: [],
       error: classifyError(err),
     };
   }

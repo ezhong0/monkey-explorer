@@ -151,6 +151,16 @@ function buildTerminalFrontMatter(opts: {
         ranForMs: opts.status.ranForMs,
         error: sanitizeText(opts.status.error),
       };
+    case 'adjudicator_failed':
+      return {
+        ...base,
+        status: 'adjudicator_failed' as const,
+        session_id: opts.sessionId,
+        replay_url: opts.replayUrl,
+        ranForMs: opts.status.ranForMs,
+        findings_count: opts.findingsCount,
+        error: sanitizeText(opts.status.error),
+      };
     case 'errored':
       return {
         ...base,

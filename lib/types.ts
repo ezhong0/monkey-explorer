@@ -11,10 +11,39 @@ import type { Page } from 'playwright-core';
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'observation';
 
+// Evidence types the adjudicator may cite. V1 trace captures network +
+// console + observation; screenshot/dom/diff are forward-compat slots
+// (V2 trace adds per-step screenshots; baseline mode adds diff).
+// In V1, citations against unsupported types fail cross-reference and
+// the finding is demoted to `speculative` with `validation_failed`.
+export type EvidenceType =
+  | 'network'      // step has 4xx/5xx or net::ERR — oracle-backed
+  | 'console'      // step has console.error or .warn — oracle-backed
+  | 'observation'  // explorer's record_observation text at a step — NOT oracle (LLM-generated)
+  | 'screenshot'   // V2: per-step screenshot — NOT oracle (VLM hallucination risk)
+  | 'dom'          // V2: per-step DOM snapshot — oracle-backed
+  | 'diff';        // V2 baseline mode: diff against baseline run — oracle-backed
+
+// Oracle-backed evidence types tier as `verified`. Others (observation,
+// screenshot) tier as `speculative` even when valid — the underlying data
+// is LLM- or VLM-generated, not ground truth.
+export const ORACLE_EVIDENCE_TYPES = ['network', 'console', 'dom', 'diff'] as const satisfies ReadonlyArray<EvidenceType>;
+
+export type Tier = 'verified' | 'speculative';
+
+export interface Provenance {
+  stepId: string;          // matches /^step_\d{4,}$/
+  evidenceType: EvidenceType;
+}
+
 export interface Finding {
   severity: Severity;
   summary: string;
   details: string;
+  // V2 fields (optional during migration; required for adjudicator output):
+  provenance?: Provenance[];
+  tier?: Tier;
+  validation_failed?: string; // populated when demoted by validation pipeline
 }
 
 // ─── Run status (per mission) ────────────────────────────────────────────────
@@ -24,7 +53,8 @@ export type RunStatus =
   | { kind: 'completed'; findings: Finding[]; ranForMs: number; tokensUsed?: number }
   | { kind: 'timed_out'; findings: Finding[]; ranForMs: number }
   | { kind: 'exceeded_tokens'; findings: Finding[]; ranForMs: number }
-  | { kind: 'extract_failed'; error: string; ranForMs: number }
+  | { kind: 'extract_failed'; error: string; ranForMs: number }                                  // legacy, retired with extract path
+  | { kind: 'adjudicator_failed'; error: string; findings: Finding[]; ranForMs: number }         // deterministic findings still ship
   | { kind: 'errored'; error: string; ranForMs: number }
   | { kind: 'not_started'; reason: string }
   | { kind: 'aborted'; ranForMs: number };
@@ -35,6 +65,7 @@ export const ALL_RUN_STATUS_KINDS = [
   'timed_out',
   'exceeded_tokens',
   'extract_failed',
+  'adjudicator_failed',
   'errored',
   'not_started',
   'aborted',

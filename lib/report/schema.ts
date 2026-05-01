@@ -70,6 +70,16 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
   }),
   z.object({
     ...Common,
+    status: z.literal('adjudicator_failed'),
+    finished_at: z.string().datetime(),
+    session_id: z.string(),
+    replay_url: z.string().url(),
+    ranForMs: z.number(),
+    findings_count: z.number().int().nonnegative(),
+    error: z.string(),
+  }),
+  z.object({
+    ...Common,
     status: z.literal('errored'),
     finished_at: z.string().datetime(),
     session_id: z.string().nullable(),

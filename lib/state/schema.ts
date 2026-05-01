@@ -110,6 +110,11 @@ export const CredentialsSchema = z.object({
 export const DefaultsSchema = z.object({
   stagehandModel: z.string().min(1),
   agentModel: z.string().min(1),
+  // Adjudicator runs after the mission; reads the trace and emits findings
+  // with cited provenance. Optional — falls back to agentModel when unset.
+  // Adjudication is text-heavy reasoning; can usually run on a cheaper model
+  // than the explorer (e.g. claude-sonnet-4-5 instead of claude-opus-4-6).
+  adjudicatorModel: z.string().min(1).optional(),
   caps: CapsSchema,
 });
 
@@ -159,8 +164,7 @@ export const DEFAULT_MODELS = {
   stagehandModel: 'openai/gpt-5.5',
   // Anthropic Sonnet 4.5 — CUA-capable. Stagehand's agent routes through
   // the Anthropic CUA path, which advertises user-provided tools to the
-  // model (so `report_finding` gets called inline during exploration).
-  // Requires anthropicApiKey in credentials.
+  // model. Requires anthropicApiKey in credentials.
   agentModel: 'anthropic/claude-sonnet-4-5-20250929',
 } as const;
 

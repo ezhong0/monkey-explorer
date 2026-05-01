@@ -142,6 +142,7 @@ export async function runRun(opts: RunOpts): Promise<number> {
     caps: refreshedState.defaults.caps,
     stagehandModel: refreshedState.defaults.stagehandModel,
     agentModel: refreshedState.defaults.agentModel,
+    adjudicatorModel: refreshedState.defaults.adjudicatorModel,
     credentials,
     invocationId,
     signal: getRootSignal(),

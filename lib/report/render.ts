@@ -95,24 +95,56 @@ export function renderTerminalReport(opts: {
 
   lines.push('');
 
-  // Findings section
-  if (findings.length > 0) {
+  // Findings section. Verified shown by default; speculative folded into a
+  // sub-section. Verified findings carry oracle-backed evidence
+  // (console / network / dom / diff); speculative findings are LLM-judgment
+  // claims that didn't cross-reference cleanly against the trace.
+  const verified = findings.filter((f) => f.tier !== 'speculative');
+  const speculative = findings.filter((f) => f.tier === 'speculative');
+
+  if (verified.length > 0) {
     lines.push('## Findings');
     lines.push('');
-    const sorted = [...findings].sort(
+    const sorted = [...verified].sort(
       (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
     );
     sorted.forEach((f, i) => {
       lines.push(`### ${i + 1}. ${SEVERITY_BADGE[f.severity] ?? f.severity} — ${f.summary}`);
       lines.push('');
       lines.push(f.details);
+      if (f.provenance && f.provenance.length > 0) {
+        const provLine = f.provenance
+          .map((p) => `\`${p.stepId}\` (${p.evidenceType})`)
+          .join(', ');
+        lines.push('');
+        lines.push(`_Evidence:_ ${provLine}`);
+      }
       lines.push('');
     });
-  } else if (status.kind === 'completed') {
+  } else if (status.kind === 'completed' || status.kind === 'adjudicator_failed') {
     lines.push('## Findings');
     lines.push('');
-    lines.push('_No findings._');
+    lines.push('_No verified findings._');
     lines.push('');
+  }
+
+  if (speculative.length > 0) {
+    lines.push('## Speculative findings');
+    lines.push('');
+    lines.push(
+      `_${speculative.length} finding${speculative.length === 1 ? '' : 's'} the adjudicator emitted but couldn't tie to oracle-backed evidence (no console/network/diff citation, or citation didn't cross-reference). Treat as informational; verify before acting._`,
+    );
+    lines.push('');
+    speculative.forEach((f, i) => {
+      lines.push(`### S${i + 1}. ${SEVERITY_BADGE[f.severity] ?? f.severity} — ${f.summary}`);
+      lines.push('');
+      lines.push(f.details);
+      if (f.validation_failed) {
+        lines.push('');
+        lines.push(`_Why speculative:_ ${f.validation_failed}`);
+      }
+      lines.push('');
+    });
   }
 
   // Embedded findings JSON (machine-readable for re-render)

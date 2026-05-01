@@ -82,6 +82,7 @@ Subcommands:
   login                Set BB + OpenAI credentials (per-machine, once).
                          Flags: --browserbase-key, --openai-key, --bb-project,
                          --anthropic-key (all-or-nothing for non-interactive).
+  config               Edit defaults (models, caps).
   target add <name>    Add a named target (URL, auth, test creds).
                          --auth-mode: password | cookie-jar | none
                          password: --sign-in-url, --test-email, --test-password
@@ -92,12 +93,10 @@ Subcommands:
   target rm <name>     Delete a target.
   target show [name]   Show target details (secrets redacted).
   current              Print the current target (name, URL, auth, status).
-  configure            Edit defaults (models, caps).
-  bootstrap-auth       Refresh the BB context cookie.
-                         Flags: --target <name> (default: current target).
-  export-cookies <name>  Open local Chrome, sign in, save storageState JSON.
-                         For cookie-jar mode. Flags: --url, --out.
-  list                 Show active + recent runs across all targets.
+  auth <name>          Refresh login: open Chrome, capture cookies, push to BB.
+                         Flags: --url (new target), --out (override path),
+                                --reset (wipe profile), --skip-bootstrap.
+  runs                 Show active + recent runs across all targets.
                          Flags: --target <name>, --since <duration> (1h/7d/30m).
 
 Run flags:
@@ -117,8 +116,12 @@ Examples:
   monkey "test the dashboard"
   monkey "test A" "test B" "test C"           # 3 missions in parallel
   monkey --target prod "test signup"
-  monkey list
-  monkey list --since 7d
+  monkey runs
+  monkey runs --since 7d
+
+Advanced (recovery):
+  monkey bootstrap-auth [--target <name>]   manual BB-context refresh
+                                            (rare — \`auth\` runs this for you)
 
 Per-subcommand help: \`monkey <subcommand> --help\`
 `;
@@ -244,24 +247,26 @@ quick "what target am I on" checks. If no current target is set, errors
 with guidance.
 `,
 
-  configure: `monkey configure — edit user-level defaults.
+  config: `monkey config — edit user-level defaults.
 
 Usage:
-  monkey configure
+  monkey config
 
 Prompts for: stagehandModel, agentModel, caps (wallClockMs, maxSteps,
 sessionTimeoutSec). Press enter on any prompt to keep the current value.
 
 For credential rotation: \`monkey login\`.
 For target-specific changes: \`monkey target rm <name>\` then \`monkey target add <name>\`.
+
+(\`monkey configure\` is also accepted as an alias.)
 `,
 
-  'export-cookies': `monkey export-cookies <name> [flags] — refresh login + push cookies to BB.
+  auth: `monkey auth <name> [flags] — refresh login + push cookies to BB.
 
 Usage:
-  monkey export-cookies <name>                   Refresh existing cookie-jar target
-  monkey export-cookies <name> --url <url>       Create new cookie-jar target via export
-  monkey export-cookies <name> --reset           Wipe profile + start fresh
+  monkey auth <name>                   Refresh existing cookie-jar target
+  monkey auth <name> --url <url>       Create new cookie-jar target via export
+  monkey auth <name> --reset           Wipe profile + start fresh
 
 Flags:
   --url <url>          For new targets — the app URL to navigate to.
@@ -291,32 +296,39 @@ What happens:
 Why local Chrome: Google's bot detection is hostile to data-center IPs.
 Signing in from your own browser produces cookies that work fine in BB
 via cookie-jar mode.
+
+(\`monkey export-cookies\` is also accepted as an alias.)
 `,
 
-  'bootstrap-auth': `monkey bootstrap-auth [--target <name>] — refresh BB context cookie.
+  'bootstrap-auth': `monkey bootstrap-auth [--target <name>] — manual BB-context refresh.
+
+This is a low-level escape hatch. In normal use, \`monkey auth <name>\`
+runs bootstrap-auth automatically after refreshing your local cookies.
+You only need to invoke this directly when:
+  - You added a target with --skip-bootstrap and want to provision it now.
+  - The BB context got into a weird state and you want to re-push cookies
+    without re-exporting them locally.
 
 Usage:
   monkey bootstrap-auth                    Use current target
   monkey bootstrap-auth --target <name>    Use specific target
 
 Reuses the target's existing contextId if present, mints a new one if not.
-Always runs the configured signIn flow — re-running refreshes a stale
-cookie.
-
-If signIn fails (e.g., test creds rotated), re-add the target with
-\`monkey target rm <name>\` then \`monkey target add <name>\`.
+Runs the configured signIn flow (cookie-jar inject, password form fill, etc.).
 `,
 
-  list: `monkey list — show active + recent runs across all targets.
+  runs: `monkey runs — show active + recent runs across all targets.
 
 Usage:
-  monkey list                       Past 24h, all targets
-  monkey list --target <name>       Filter to one target
-  monkey list --since <duration>    Custom window (e.g., 1h, 7d, 30m)
+  monkey runs                       Past 24h, all targets
+  monkey runs --target <name>       Filter to one target
+  monkey runs --since <duration>    Custom window (e.g., 1h, 7d, 30m)
 
 Reports live at ~/.config/monkey-explorer/reports/<target>/. In a TTY:
 arrow keys + enter to drill into a report. Piped (non-TTY): static
 greppable text.
+
+(\`monkey list\` is also accepted as an alias.)
 `,
 };
 
@@ -346,8 +358,14 @@ async function main(argv: string[]): Promise<number> {
   const subcommand = args._[0];
 
   // Per-subcommand --help. For `target <sub>`, key is `target:<sub>`.
+  // Aliases route to the new canonical key.
+  const HELP_ALIASES: Record<string, string> = {
+    'export-cookies': 'auth',
+    configure: 'config',
+    list: 'runs',
+  };
   if (args.help && subcommand) {
-    let key = subcommand;
+    let key = HELP_ALIASES[subcommand] ?? subcommand;
     if (subcommand === 'target' && args._[1]) {
       key = `${subcommand}:${args._[1]}`;
     }
@@ -394,7 +412,8 @@ async function main(argv: string[]): Promise<number> {
         const { runCurrent } = await import('./commands/current.js');
         return runCurrent();
       }
-      case 'configure': {
+      case 'config':
+      case 'configure': {  // alias kept for muscle memory
         const { runConfigure } = await import('./commands/configure.js');
         return runConfigure();
       }
@@ -405,10 +424,11 @@ async function main(argv: string[]): Promise<number> {
           nonInteractive: Boolean(args['non-interactive']),
         });
       }
-      case 'export-cookies': {
+      case 'auth':
+      case 'export-cookies': {  // alias kept for muscle memory
         const positionalName = args._[1];
         if (!positionalName) {
-          process.stderr.write('Usage: monkey export-cookies <target-name> [--url <url>] [--out <path>]\n');
+          process.stderr.write('Usage: monkey auth <target-name> [--url <url>] [--reset] [--skip-bootstrap]\n');
           return 1;
         }
         const { runExportCookies } = await import('./commands/export-cookies.js');
@@ -421,7 +441,8 @@ async function main(argv: string[]): Promise<number> {
           nonInteractive: Boolean(args['non-interactive']),
         });
       }
-      case 'list': {
+      case 'runs':
+      case 'list': {  // alias kept for muscle memory
         const { runList } = await import('./commands/list.js');
         return runList({ targetFilter: args.target, since: args.since });
       }

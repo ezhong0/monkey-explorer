@@ -256,7 +256,7 @@ For credential rotation: \`monkey login\`.
 For target-specific changes: \`monkey target rm <name>\` then \`monkey target add <name>\`.
 `,
 
-  'export-cookies': `monkey export-cookies <name> [flags] — open Chrome and capture session state.
+  'export-cookies': `monkey export-cookies <name> [flags] — refresh login + push cookies to BB.
 
 Usage:
   monkey export-cookies <name>                   Refresh existing cookie-jar target
@@ -264,31 +264,33 @@ Usage:
   monkey export-cookies <name> --reset           Wipe profile + start fresh
 
 Flags:
-  --url <url>     For new targets — the app URL to navigate to. Required if
-                  the target doesn't already exist.
-  --out <path>    Override output JSON path. Default for new targets:
-                  ~/.config/monkey-explorer/cookie-jars/<name>.json
-                  Default for existing: target's existing cookie-jar-path.
-  --reset         Wipe the persistent Chrome profile dir before launching.
-                  Use to sign in as a different user, or to recover from
-                  "profile in use" errors.
+  --url <url>          For new targets — the app URL to navigate to.
+                       Required if the target doesn't already exist.
+  --out <path>         Override output JSON path. Default for new targets:
+                       ~/.config/monkey-explorer/cookie-jars/<name>.json
+                       Default for existing: target's existing cookie-jar-path.
+  --reset              Wipe the persistent Chrome profile dir before launching.
+                       Use to sign in as a different user, or to recover from
+                       "profile in use" errors.
+  --skip-bootstrap     Don't auto-run bootstrap-auth at the end. Default is to
+                       bootstrap immediately so the next mission is fast. Set
+                       this in CI / scripted flows where bootstrap runs separately.
 
 What happens:
-  Opens Chrome with a persistent profile at ~/.config/monkey-explorer/chrome-profile/.
-  After your first sign-in there, subsequent runs reuse the same Chrome
-  session — you don't re-do OAuth every export.
+  1. Opens Chrome with a persistent profile (~/.config/monkey-explorer/chrome-profile/).
+     After your first sign-in there, subsequent runs reuse the same Chrome
+     session — you don't re-do OAuth every export.
+  2. Navigates to the URL. Auto-detects whether you're already signed in.
+     - If yes: just press Enter to capture cookies.
+     - If no:  sign in via the Chrome window, then press Enter.
+  3. Captures cookies + localStorage as a Playwright storageState JSON.
+  4. Auto-runs bootstrap-auth, pushing the cookies into your BB context.
+     The next mission starts already signed in, no auto-reauth needed.
+     (Skip with --skip-bootstrap if you want to bootstrap separately.)
 
-  monkey navigates to the URL and auto-detects whether you're already
-  signed in. If you are, just press Enter to capture. Otherwise, sign in
-  via the Chrome window, then press Enter.
-
-  Captures cookies + localStorage as a Playwright storageState JSON.
-  Run \`monkey bootstrap-auth --target <name>\` next to inject the cookies
-  into your Browserbase context.
-
-  Why local Chrome: Google's bot detection is hostile to data-center IPs.
-  Signing in from your own browser produces cookies that work fine in BB
-  via cookie-jar mode.
+Why local Chrome: Google's bot detection is hostile to data-center IPs.
+Signing in from your own browser produces cookies that work fine in BB
+via cookie-jar mode.
 `,
 
   'bootstrap-auth': `monkey bootstrap-auth [--target <name>] — refresh BB context cookie.
@@ -415,6 +417,8 @@ async function main(argv: string[]): Promise<number> {
           url: args.url,
           out: args.out,
           reset: args.reset,
+          skipBootstrap: args['skip-bootstrap'],
+          nonInteractive: Boolean(args['non-interactive']),
         });
       }
       case 'list': {

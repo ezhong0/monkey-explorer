@@ -42,6 +42,12 @@ export interface ExportCookiesOpts {
   /** Wipe the persistent Chrome profile dir before launching. Use this to
    *  sign in as a different user, or to recover from a stuck profile lock. */
   reset?: boolean;
+  /** Skip the auto bootstrap-auth that follows a successful export. Default
+   *  is to bootstrap immediately so cookies are live in the BB context.
+   *  Set this in CI / scripted flows where the bootstrap is run separately. */
+  skipBootstrap?: boolean;
+  /** Forwarded to bootstrap-auth — error rather than prompt for trust. */
+  nonInteractive?: boolean;
 }
 
 export async function runExportCookies(opts: ExportCookiesOpts): Promise<number> {
@@ -195,16 +201,38 @@ export async function runExportCookies(opts: ExportCookiesOpts): Promise<number>
       };
       await saveGlobalState(next);
       log.ok(`Created cookie-jar target "${opts.targetName}".`);
-      log.info(`  Next: monkey bootstrap-auth --target ${opts.targetName}`);
-    } else {
-      log.info(`  Next: monkey bootstrap-auth --target ${opts.targetName}  # injects fresh cookies into BB context`);
     }
-
-    return 0;
   } finally {
     await browser.close().catch(() => {});
     void existsSync; // silence unused-import warning on TS-side
   }
+
+  // Auto bootstrap-auth: pushes the freshly-exported cookies into the BB
+  // context so the next mission starts already signed in. Skippable for
+  // CI / scripted flows; manual recovery still works via
+  // `monkey bootstrap-auth --target <name>`.
+  if (opts.skipBootstrap) {
+    log.blank();
+    log.info(`Skipped bootstrap-auth (--skip-bootstrap).`);
+    log.info(`  Run manually: monkey bootstrap-auth --target ${opts.targetName}`);
+    return 0;
+  }
+
+  log.blank();
+  log.step('Bootstrapping BB context with the fresh cookies…');
+  const { runBootstrapAuth } = await import('./bootstrap-auth.js');
+  const bsCode = await runBootstrapAuth({
+    targetName: opts.targetName,
+    nonInteractive: opts.nonInteractive,
+  });
+  if (bsCode !== 0) {
+    log.warn(
+      `Cookies were written, but bootstrap-auth failed. The next mission will auto-reauth (or fail again).`,
+    );
+    log.info(`  Retry manually: monkey bootstrap-auth --target ${opts.targetName}`);
+    return bsCode;
+  }
+  return 0;
 }
 
 async function waitForEnter(): Promise<void> {

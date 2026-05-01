@@ -5,6 +5,13 @@
 // bookkeeping (e.g., propagating SIGINT to other phases of runMission);
 // we do NOT pass it to Stagehand. Cancellation propagates via session
 // close → CDP disconnect → agent.execute throws.
+//
+// Findings are extracted via a SECOND LLM call after agent.execute returns —
+// see lib/stagehand/extract.ts. This depends on the BB session's CDP WS
+// staying alive across the gap. Inline tool emission (via AgentConfig.tools)
+// would close that gap, but Stagehand v3.0.0's compiled handler at
+// dist/index.js:10315 ignores user-provided tools — the type-def field is
+// aspirational. When upstream fixes that, switch to a `report_finding` tool.
 
 import type { Stagehand } from '@browserbasehq/stagehand';
 

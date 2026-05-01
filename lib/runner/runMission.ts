@@ -21,7 +21,7 @@ import { startWallClockTimer } from './caps.js';
 import { createSession, type MonkeySession } from '../bb/session.js';
 import { createStagehand } from '../stagehand/adapter.js';
 import { executeAgent } from '../stagehand/agent.js';
-import { extractFindings } from '../stagehand/extract.js';
+import { extractFindings, isStagehandHandleClosedError } from '../stagehand/extract.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
@@ -208,22 +208,40 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       }
     }
   } finally {
-    timer.clear(); // critical: clear before extract() so a late-fire doesn't kill it
+    timer.clear(); // clear before extract() so a late-fire doesn't kill it
   }
 
-  // Extract findings (skipped if timer fired — session is closed).
+  // Extract findings via a second LLM call. Skipped if timer fired (session
+  // is closed). Two failure shapes handled distinctly:
+  //   - Stagehand handle closed (BB WS died) → degrade gracefully:
+  //     status: completed, findings: [], with a warn log. The handle-close
+  //     class affects long missions; the bug isn't in monkey itself.
+  //   - Other extract failure (model error, schema mismatch, etc.) →
+  //     status: extract_failed, error surfaced.
   let findings: Finding[] = [];
   let extractError: string | null = null;
+  let extractDegraded = false; // did we silently degrade due to handle-close?
   if (!timer.fired() && !opts.signal.aborted) {
     try {
       const result = await extractFindings(stagehandHandle.stagehand);
       findings = result.findings.map(sanitizeFinding);
     } catch (err) {
-      extractError = sanitizeText((err as Error).message);
+      if (isStagehandHandleClosedError(err)) {
+        extractDegraded = true;
+        log.warn(
+          `${prefix} extract skipped (Stagehand handle closed after agent.execute). ` +
+            `Mission completed but findings unavailable. See replay: ${session!.replayUrl}`,
+        );
+      } else {
+        extractError = sanitizeText((err as Error).message);
+      }
     }
   }
 
-  // Build terminal status
+  // Build terminal status. Note: handle-closed-during-extract is treated as
+  // a successful mission (the agent did its work; findings extraction is a
+  // best-effort second step). Other extract errors fail the mission.
+  void extractDegraded;
   const ranForMs = elapsed(startedAt);
   let status: RunStatus;
   if (opts.signal.aborted) {

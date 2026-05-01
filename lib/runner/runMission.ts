@@ -196,6 +196,12 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       stagehand: stagehandHandle.stagehand,
       agentModel: opts.agentModel,
       agentApiKey: pickModelApiKey(opts.agentModel, opts.credentials),
+      // When the user has configured an Anthropic base URL override
+      // (e.g. an Azure Foundry endpoint), thread it through so the agent
+      // routes Claude calls there instead of api.anthropic.com.
+      agentBaseURL: opts.agentModel.startsWith('anthropic/')
+        ? opts.credentials.anthropicBaseURL
+        : undefined,
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
       signal: opts.signal,

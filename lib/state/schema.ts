@@ -96,6 +96,13 @@ export const CredentialsSchema = z.object({
   browserbaseProjectId: z.string().min(1),
   openaiApiKey: z.string().min(1),
   anthropicApiKey: z.string().min(1).optional(),
+  // Optional override for the Anthropic API base URL. Set to e.g. an Azure
+  // Foundry endpoint (https://<resource>.services.ai.azure.com/anthropic)
+  // to route Claude calls there instead of api.anthropic.com — useful when
+  // the direct Anthropic key has tight rate limits and an Azure deployment
+  // has more headroom. When set, anthropicApiKey is interpreted as the
+  // Azure deployment's key (NOT a sk-ant-... key).
+  anthropicBaseURL: z.string().url().optional(),
 });
 
 // ─── Defaults block (per-user preferences) ───

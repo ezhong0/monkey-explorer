@@ -87,11 +87,22 @@ export async function executeAgent(opts: {
   stagehand: Stagehand;
   agentModel: string;
   agentApiKey: string;
+  /** Optional Anthropic base URL override (e.g. Azure Foundry endpoint).
+   *  When set, model name is sent unprefixed and provider is forced to
+   *  'anthropic' (bypassing Stagehand's modelToAgentProviderMap lookup,
+   *  which doesn't know Azure-deployed model names). */
+  agentBaseURL?: string;
   instruction: string;
   maxSteps: number;
   signal: AbortSignal;
 }): Promise<AgentResult> {
   const useCua = isCuaCapable(opts.agentModel);
+  const useAzure = !!opts.agentBaseURL;
+  // Azure Foundry rejects prefixed model names ("anthropic/claude-..."),
+  // it wants the raw deployment name. Direct Anthropic accepts the prefix.
+  const apiModelName = useAzure
+    ? opts.agentModel.replace(/^anthropic\//, '')
+    : opts.agentModel;
 
   // Findings emitted via the inline tool (CUA path only). Closure-captured
   // and read after agent.execute returns.
@@ -123,7 +134,18 @@ export async function executeAgent(opts: {
     .join('\n');
 
   const agent = opts.stagehand.agent({
-    model: { modelName: opts.agentModel, apiKey: opts.agentApiKey },
+    model: {
+      modelName: apiModelName,
+      apiKey: opts.agentApiKey,
+      ...(useAzure
+        ? {
+            baseURL: opts.agentBaseURL,
+            // Bypass Stagehand's model-name → provider lookup, since
+            // Azure deployment names aren't in modelToAgentProviderMap.
+            provider: 'anthropic',
+          }
+        : {}),
+    },
     systemPrompt,
     ...(useCua
       ? {

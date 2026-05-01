@@ -224,7 +224,7 @@ function printSummary(results: MissionResult[], wallMs: number): void {
     log.info(`Issues:`);
     for (const r of failed) {
       const errStr =
-        r.status.kind === 'errored' || r.status.kind === 'extract_failed'
+        r.status.kind === 'errored' || r.status.kind === 'adjudicator_failed'
           ? `: ${r.status.error}`
           : r.status.kind === 'not_started'
             ? `: ${r.status.reason}`

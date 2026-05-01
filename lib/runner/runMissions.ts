@@ -71,17 +71,10 @@ export async function runMissions(opts: RunMissionsOpts): Promise<MissionResult[
 // N independent error messages.
 export function summarizeCascadingFailures(results: MissionResult[]): string | null {
   if (results.length < 2) return null;
-  const errored = results.filter(
-    (r) => r.status.kind === 'errored' || r.status.kind === 'extract_failed',
-  );
+  const errored = results.filter((r) => r.status.kind === 'errored');
   if (errored.length !== results.length) return null;
   const messages = new Set(
-    errored.map((r) => {
-      if (r.status.kind === 'errored' || r.status.kind === 'extract_failed') {
-        return r.status.error;
-      }
-      return '';
-    }),
+    errored.map((r) => (r.status.kind === 'errored' ? r.status.error : '')),
   );
   if (messages.size !== 1) return null;
   const [shared] = messages;

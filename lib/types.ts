@@ -53,7 +53,6 @@ export type RunStatus =
   | { kind: 'completed'; findings: Finding[]; ranForMs: number; tokensUsed?: number }
   | { kind: 'timed_out'; findings: Finding[]; ranForMs: number }
   | { kind: 'exceeded_tokens'; findings: Finding[]; ranForMs: number }
-  | { kind: 'extract_failed'; error: string; ranForMs: number }                                  // legacy, retired with extract path
   | { kind: 'adjudicator_failed'; error: string; findings: Finding[]; ranForMs: number }         // deterministic findings still ship
   | { kind: 'errored'; error: string; ranForMs: number }
   | { kind: 'not_started'; reason: string }
@@ -64,7 +63,6 @@ export const ALL_RUN_STATUS_KINDS = [
   'completed',
   'timed_out',
   'exceeded_tokens',
-  'extract_failed',
   'adjudicator_failed',
   'errored',
   'not_started',

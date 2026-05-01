@@ -155,8 +155,8 @@ export const DEFAULT_CAPS: Caps = {
 };
 
 export const DEFAULT_MODELS = {
-  // Used by Stagehand's extract() and act() — text-mostly calls, not the
-  // agentic loop. OpenAI gpt-5.5 here is fine.
+  // Used by non-agentic Stagehand calls — `act()` during password sign-in
+  // form-fill, and the marker-detection probe. OpenAI gpt-5.5 is fine here.
   stagehandModel: 'openai/gpt-5.5',
   // Anthropic Sonnet 4.5 — CUA-capable. Stagehand's agent routes through
   // the Anthropic CUA path, which advertises user-provided tools to the

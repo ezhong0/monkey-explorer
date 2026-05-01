@@ -86,7 +86,6 @@ function deriveVerdict(status: RunStatus, verifiedFindings: Finding[]): Verdict 
   // Mission-level failures (didn't complete cleanly) → fail
   if (
     status.kind === 'errored' ||
-    status.kind === 'extract_failed' ||
     status.kind === 'not_started' ||
     status.kind === 'aborted' ||
     status.kind === 'timed_out' ||

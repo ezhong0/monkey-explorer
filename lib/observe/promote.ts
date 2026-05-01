@@ -6,9 +6,11 @@
 // the oracle: a JS exception said something failed; a 4xx/5xx response
 // IS a server-side error.
 //
-// Naming convention for stepIds emitted here: `step_event_NNNN` so they
-// don't collide with action-step IDs (`step_NNNN`). The adjudicator can
-// cite either form.
+// StepId namespace: `step_console_NNNN` for console events,
+// `step_network_NNNN` for network events. Distinct from trace action
+// steps (`step_NNNN`) so the adjudicator's validator can disambiguate.
+// The adjudicator schema enforces both shapes via an anchored regex
+// (lib/adjudicate/run.ts ZOD_TO_JSON_SCHEMA).
 
 import type { ConsoleEvent, Finding, NetworkFailure, Provenance } from '../types.js';
 

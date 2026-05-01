@@ -1,4 +1,5 @@
-// `monkey list` — show active + recent runs from the global reports dir.
+// `monkey runs` — show active + recent runs from the global reports dir.
+// (`monkey list` is also accepted as a legacy alias.)
 // Groups by target by default; --target filters.
 
 import { existsSync } from 'node:fs';
@@ -60,7 +61,6 @@ function statusIcon(status: string): string {
   switch (status) {
     case 'completed': return '✓';
     case 'errored':
-    case 'extract_failed':
     case 'not_started': return '✗';
     case 'timed_out':
     case 'aborted':
@@ -112,7 +112,7 @@ export async function runList(opts: {
 
   if (filtered.length === 0) {
     log.info('No monkey runs found in the time window.');
-    log.info(`  Try \`monkey list --since 7d\` for an older window.`);
+    log.info(`  Try \`monkey runs --since 7d\` for an older window.`);
     return 0;
   }
 

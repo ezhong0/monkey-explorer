@@ -25,7 +25,7 @@
 //
 // Requires `playwright-core` (already a monkey dep) + system Chrome.
 
-import { existsSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
+import { mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { writeFile, rename } from 'node:fs/promises';
 import { stdin, stdout } from 'node:process';
@@ -215,7 +215,6 @@ export async function runAuth(opts: AuthOpts): Promise<number> {
     }
   } finally {
     await browser.close().catch(() => {});
-    void existsSync; // silence unused-import warning on TS-side
   }
 
   // Auto bootstrap-auth: pushes the freshly-exported cookies into the BB

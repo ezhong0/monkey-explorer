@@ -4,10 +4,11 @@
 //   3. Print [N/M] header with live view + replay URLs
 //   4. Connect Stagehand
 //   5. Probe — if sign-in-page, run auth dispatch + retry probe (1x)
-//   6. Execute agent (with wall-clock timer guarding)
-//   7. Extract findings (in finally — wall-clock timer cleared first)
-//   8. Update report with terminal status
-//   9. Close session
+//   6. Execute agent (CUA loop with record_observation tool)
+//   7. Fetch session events (console + network) post-mission
+//   8. Lift deterministic findings (console errors + 4xx/5xx)
+//   9. Build in-memory trace; run adjudicator with provenance enforcement
+//   10. Combine lifter + adjudicator findings; update report; close session
 //
 // Each step's failure mode is mapped onto the RunStatus discriminated union.
 
@@ -302,12 +303,10 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       log.warn(`${prefix} adjudicator failed (${ae.kind}); shipping ${liftedFindings.length} deterministic findings only.`);
     }
   }
-  let extractError: string | null = null;
-  void extractError; // legacy, retired with the extract path
 
-  // Build terminal status. Note: handle-closed-during-extract is treated as
-  // a successful mission (the agent did its work; findings extraction is a
-  // best-effort second step). Other extract errors fail the mission.
+  // Build terminal status. Adjudicator failure is treated as mission-
+  // completed-with-warning: deterministic findings still ship, but the run
+  // is marked `adjudicator_failed` so consumers can distinguish.
   const ranForMs = elapsed(startedAt);
   let status: RunStatus;
   if (opts.signal.aborted) {
@@ -319,7 +318,6 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   } else if (agentError) {
     status = { kind: 'errored', error: sanitizeText(agentError.message), ranForMs };
   } else if (adjudicatorError) {
-    // Mission completed; adjudicator failed. Deterministic findings still ship.
     status = {
       kind: 'adjudicator_failed',
       error: adjudicatorError,
@@ -327,7 +325,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       ranForMs,
     };
   } else {
-    void agentSucceeded;
+    void agentSucceeded; // currently informational; verdict derives from findings instead
     status = { kind: 'completed', findings, ranForMs, tokensUsed };
   }
 
@@ -369,7 +367,10 @@ async function finalize(
   const replayUrl = ctx.session?.replayUrl ?? '';
   const consoleErrors = ctx.consoleErrors;
   const networkFailures = ctx.networkFailures;
-  void ctx.observations; // Phase 4/6 will surface these in the report
+  // Observations are captured in the trace + fed to the adjudicator; we
+  // don't surface them as a separate report section today. If the adjudicator
+  // turned an observation into a finding, it shows up there.
+  void ctx.observations;
 
   // Write terminal report
   let costSummary: string | undefined;

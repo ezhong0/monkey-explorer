@@ -142,15 +142,6 @@ function buildTerminalFrontMatter(opts: {
         ranForMs: opts.status.ranForMs,
         findings_count: opts.findingsCount,
       };
-    case 'extract_failed':
-      return {
-        ...base,
-        status: 'extract_failed' as const,
-        session_id: opts.sessionId,
-        replay_url: opts.replayUrl,
-        ranForMs: opts.status.ranForMs,
-        error: sanitizeText(opts.status.error),
-      };
     case 'adjudicator_failed':
       return {
         ...base,

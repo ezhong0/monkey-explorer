@@ -46,6 +46,7 @@ interface Argv {
   'skip-bootstrap'?: boolean;
   // export-cookies flags
   out?: string;
+  reset?: boolean;
 }
 
 function parseArgs(argv: string[]): Argv {
@@ -66,7 +67,7 @@ function parseArgs(argv: string[]): Argv {
       'cookie-jar-path',
       'out',
     ],
-    boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap'],
+    boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap', 'reset'],
     alias: { h: 'help', v: 'version' },
   }) as Argv;
 }
@@ -255,11 +256,12 @@ For credential rotation: \`monkey login\`.
 For target-specific changes: \`monkey target rm <name>\` then \`monkey target add <name>\`.
 `,
 
-  'export-cookies': `monkey export-cookies <name> [flags] — open local Chrome and capture session state.
+  'export-cookies': `monkey export-cookies <name> [flags] — open Chrome and capture session state.
 
 Usage:
   monkey export-cookies <name>                   Refresh existing cookie-jar target
   monkey export-cookies <name> --url <url>       Create new cookie-jar target via export
+  monkey export-cookies <name> --reset           Wipe profile + start fresh
 
 Flags:
   --url <url>     For new targets — the app URL to navigate to. Required if
@@ -267,15 +269,22 @@ Flags:
   --out <path>    Override output JSON path. Default for new targets:
                   ~/.config/monkey-explorer/cookie-jars/<name>.json
                   Default for existing: target's existing cookie-jar-path.
+  --reset         Wipe the persistent Chrome profile dir before launching.
+                  Use to sign in as a different user, or to recover from
+                  "profile in use" errors.
 
 What happens:
-  Opens your local Chrome (or bundled chromium fallback) at the URL. Sign in
-  normally — Google OAuth, MFA, anything. Press Enter in this terminal once
-  you've reached a signed-in page. monkey reads the resulting cookies +
-  localStorage and writes them as a Playwright storageState JSON.
+  Opens Chrome with a persistent profile at ~/.config/monkey-explorer/chrome-profile/.
+  After your first sign-in there, subsequent runs reuse the same Chrome
+  session — you don't re-do OAuth every export.
 
-  After this, run \`monkey bootstrap-auth --target <name>\` to inject the
-  cookies into your Browserbase context.
+  monkey navigates to the URL and auto-detects whether you're already
+  signed in. If you are, just press Enter to capture. Otherwise, sign in
+  via the Chrome window, then press Enter.
+
+  Captures cookies + localStorage as a Playwright storageState JSON.
+  Run \`monkey bootstrap-auth --target <name>\` next to inject the cookies
+  into your Browserbase context.
 
   Why local Chrome: Google's bot detection is hostile to data-center IPs.
   Signing in from your own browser produces cookies that work fine in BB
@@ -405,6 +414,7 @@ async function main(argv: string[]): Promise<number> {
           targetName: positionalName,
           url: args.url,
           out: args.out,
+          reset: args.reset,
         });
       }
       case 'list': {

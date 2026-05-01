@@ -31,6 +31,17 @@ export function getCookieJarsBaseDir(): string {
   return join(getBaseDir(), 'cookie-jars');
 }
 
+/**
+ * Persistent Chrome profile shared across `monkey export-cookies` runs.
+ * Holds Google session, Clerk session, etc. so re-exports don't force
+ * re-OAuth every time. One dir, used across all cookie-jar targets — Clerk
+ * session cookies are per-app but Google account cookies are universal,
+ * and the profile gracefully holds both.
+ */
+export function getChromeProfileDir(): string {
+  return join(getBaseDir(), 'chrome-profile');
+}
+
 export function getCookieJarPathForTarget(targetName: string): string {
   if (!isValidTargetName(targetName)) {
     throw new Error(

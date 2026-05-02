@@ -84,6 +84,13 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     }
   }
 
+  // Reject partial creds — passing only one of the pair is almost always
+  // a typo, and silently routing to ceremony mode hides the user's mistake.
+  if (Boolean(opts.testEmail) !== Boolean(opts.testPassword)) {
+    log.fail('--test-email and --test-password must be passed together (or neither).');
+    return 1;
+  }
+
   // Decide auth strategy from what the user gave us.
   let authMode: AuthMode;
   if (opts.noAuth) {

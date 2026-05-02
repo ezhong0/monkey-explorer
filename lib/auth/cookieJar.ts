@@ -61,7 +61,7 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
   try {
     log.step('Refreshing cookies from local Chrome profile…');
     const fresh = await silentProfileExtract({
-      profileDir: getChromeProfileDir(),
+      profileDir: getChromeProfileDir(opts.targetName),
       targetUrl: opts.targetUrl,
     });
     log.ok(`Captured ${fresh.cookies.length} cookies from profile (fresh JWT).`);

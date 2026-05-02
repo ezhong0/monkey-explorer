@@ -32,14 +32,23 @@ export function getCookieJarsBaseDir(): string {
 }
 
 /**
- * Persistent Chrome profile shared across `monkey export-cookies` runs.
- * Holds Google session, Clerk session, etc. so re-exports don't force
- * re-OAuth every time. One dir, used across all cookie-jar targets — Clerk
- * session cookies are per-app but Google account cookies are universal,
- * and the profile gracefully holds both.
+ * Persistent Chrome profile per target. Holds the target's Google/SSO
+ * session, app session cookies, etc. so re-ceremony / silent-extract for a
+ * given target reuses what was captured before. Per-target isolation —
+ * one target's session can't leak identity into another target's auth flow
+ * (e.g., a multi-Google-account user with personal + work targets).
+ *
+ * Path: `<baseDir>/chrome-profiles/<targetName>/`. The pluralized
+ * `chrome-profiles` directory is intentional — distinguishes from the older
+ * single shared `chrome-profile/` (now orphaned; safe to delete manually).
  */
-export function getChromeProfileDir(): string {
-  return join(getBaseDir(), 'chrome-profile');
+export function getChromeProfileDir(targetName: string): string {
+  if (!isValidTargetName(targetName)) {
+    throw new Error(
+      `Invalid target name "${targetName}" — must match ${TARGET_NAME_PATTERN.source}`,
+    );
+  }
+  return join(getBaseDir(), 'chrome-profiles', targetName);
 }
 
 export function getCookieJarPathForTarget(targetName: string): string {

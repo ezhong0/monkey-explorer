@@ -106,7 +106,7 @@ export async function runAuth(opts: AuthOpts): Promise<number> {
       : getCookieJarPathForTarget(opts.targetName);
   }
 
-  const profileDir = getChromeProfileDir();
+  const profileDir = getChromeProfileDir(opts.targetName);
   if (opts.reset) {
     log.step(`--reset: wiping Chrome profile at ${profileDir}`);
     try {

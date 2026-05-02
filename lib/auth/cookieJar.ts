@@ -20,7 +20,6 @@ import {
   type StorageState,
   type StorageStateCookie,
 } from '../state/schema.js';
-import { waitForAuthSettled } from '../probe/markerDetect.js';
 import * as log from '../log/stderr.js';
 
 export class CookieJarError extends Error {
@@ -171,19 +170,14 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
   }
 
   // Navigate to target.url so the post-check probe in bootstrap-auth has a
-  // real page to inspect.
+  // real page to inspect. Auth-state-settle wait is owned by bootstrap-auth
+  // (between dispatchSignIn and isSignedIn) — common to all auth modes.
   if (opts.signal.aborted) return;
   try {
     await opts.page.goto(opts.targetUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
   } catch (err) {
     log.warn(`Navigation to ${opts.targetUrl} failed: ${(err as Error).message}`);
   }
-  // Cookie injection alone isn't enough for auth providers like Clerk that
-  // refresh stale JWTs client-side via the refresh cookie. Wait up to 5s
-  // for that refresh to complete before bootstrap-auth runs its post-check
-  // marker test. Without this, the marker check fires too early and reports
-  // "not signed in" even though refresh is about to succeed.
-  await waitForAuthSettled(opts.page);
   log.ok(`Navigated to ${opts.targetUrl}`);
 }
 

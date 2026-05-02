@@ -20,7 +20,7 @@ import { createSession } from '../lib/bb/session.js';
 import { createStagehand } from '../lib/stagehand/adapter.js';
 import { pickModelApiKey } from '../lib/stagehand/modelKey.js';
 import { dispatchSignIn } from '../lib/auth/dispatch.js';
-import { isSignedIn } from '../lib/probe/markerDetect.js';
+import { isSignedIn, waitForAuthSettled } from '../lib/probe/markerDetect.js';
 import { getRootSignal, installSigintHandler } from '../lib/signal/abort.js';
 
 export interface BootstrapAuthOpts {
@@ -91,6 +91,13 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       signal,
     });
 
+    // Auth-state-settle wait owned at the dispatch boundary — auth-mode
+    // implementations don't have to remember this individually. After
+    // dispatchSignIn the page has navigated to the post-signed-in URL but
+    // the auth-provider's client-side refresh dance (Clerk/Auth0) may
+    // still be in flight; isSignedIn run too eagerly observes the
+    // pre-refresh state.
+    await waitForAuthSettled(page);
     const signedIn = await isSignedIn({ page, stagehand: stagehandHandle.stagehand });
     if (signedIn === true) {
       log.ok('Signed in.');

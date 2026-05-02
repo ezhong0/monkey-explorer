@@ -25,7 +25,11 @@ const SIGN_IN_PATH_RE = /\/sign-?in|\/login|\/auth/i;
 
 const PASSWORD_INPUT_TIMEOUT_MS = 3000;
 const SETTLE_NETWORK_IDLE_TIMEOUT_MS = 5000;
-const RETRY_ON_NEGATIVE_DELAY_MS = 1500;
+// 2500ms (was 1500ms): Clerk's frontend refresh dance is sometimes slower
+// than networkidle suggests (background polling can fire before refresh
+// settles). The longer delay catches the residual race at the cost of
+// 1s more latency on negative outcomes only.
+const RETRY_ON_NEGATIVE_DELAY_MS = 2500;
 
 const SignedInSchema = z.object({
   signedIn: z.boolean(),

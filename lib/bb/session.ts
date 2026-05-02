@@ -2,6 +2,7 @@
 // types. `close` is `sessions.update REQUEST_RELEASE` under the hood —
 // idempotent (verified during Phase 0 spike).
 
+import * as log from '../log/stderr.js';
 import type { Browserbase } from './client.js';
 
 export interface MonkeySession {
@@ -79,8 +80,13 @@ export async function createSession(opts: {
             setTimeout(() => reject(new Error('session.close timed out after 15s')), 15_000),
           ),
         ]);
-      } catch {
-        // Best-effort; session may already be released or the API may be hung.
+      } catch (err) {
+        // Best-effort; session may already be released. Surface timeouts so
+        // a hung release call is visible (consistent with fetchEvents.ts).
+        const msg = (err as Error).message;
+        if (msg.includes('timed out')) {
+          log.warn(`Browserbase session ${session.id} release ${msg}; session may linger until BB reaper.`);
+        }
       }
     },
   };

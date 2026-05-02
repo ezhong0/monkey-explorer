@@ -4,8 +4,10 @@
 // Cross-process locking: parallel monkey invocations can race on read-modify-
 // write of the same config file (load → mutate → save), losing updates.
 // `proper-lockfile` provides a `.lock` sentinel directory with stale-lock
-// detection. Fix landed 2026-05-01 after the audit flagged a lost-update
-// race that could clobber `contextId` (critical for auth survival).
+// detection. Today the only fields that race are `lastUsed` (best-effort)
+// and `contextId` (overwritten by the next bootstrap anyway), so the cost
+// of a lost write is low — the lock exists to keep the option open if a
+// load-bearing write lands in here later.
 
 import { mkdir, writeFile, rename, chmod, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';

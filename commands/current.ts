@@ -5,7 +5,6 @@
 import * as out from '../lib/log/stdout.js';
 import * as log from '../lib/log/stderr.js';
 import { requireGlobalState } from '../lib/state/load.js';
-import { targetIsBootstrapped } from '../lib/state/predicates.js';
 
 export async function runCurrent(): Promise<number> {
   const state = await requireGlobalState();
@@ -21,11 +20,6 @@ export async function runCurrent(): Promise<number> {
     log.info('  Run `monkey target use <name>` to pick a valid one.');
     return 1;
   }
-  const ctx = targetIsBootstrapped(target)
-    ? 'bootstrapped'
-    : target.contextId
-      ? 'context only (signIn unconfirmed)'
-      : 'not bootstrapped';
-  out.out(`${name}  ${target.url}  ${target.authMode.kind}  ${ctx}`);
+  out.out(`${name}  ${target.url}  ${target.authMode.kind}  last_used=${target.lastUsed || 'never'}`);
   return 0;
 }

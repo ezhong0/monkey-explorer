@@ -204,7 +204,6 @@ export async function runAuth(opts: AuthOpts): Promise<number> {
             url: navigationUrl,
             authMode: { kind: 'cookie-jar', path: outPath },
             contextId: '',
-            lastSignedInAt: '',
             lastUsed: '',
           },
         },
@@ -218,18 +217,17 @@ export async function runAuth(opts: AuthOpts): Promise<number> {
   }
 
   // Auto bootstrap-auth: pushes the freshly-exported cookies into the BB
-  // context so the next mission starts already signed in. Skippable for
-  // CI / scripted flows; manual recovery still works via
-  // `monkey bootstrap-auth --target <name>`.
+  // context, validating that the cookies actually work. Skippable for
+  // CI / scripted flows where validation isn't worth the BB-session cost.
   if (opts.skipBootstrap) {
     log.blank();
-    log.info(`Skipped bootstrap-auth (--skip-bootstrap).`);
-    log.info(`  Run manually: monkey bootstrap-auth --target ${opts.targetName}`);
+    log.info(`Skipped post-export bootstrap validation (--skip-bootstrap).`);
+    log.info(`  Cookies will be validated on the next \`monkey "..."\` run.`);
     return 0;
   }
 
   log.blank();
-  log.step('Bootstrapping BB context with the fresh cookies…');
+  log.step('Validating cookies in a Browserbase session…');
   const { runBootstrapAuth } = await import('./bootstrap-auth.js');
   const bsCode = await runBootstrapAuth({
     targetName: opts.targetName,
@@ -237,9 +235,9 @@ export async function runAuth(opts: AuthOpts): Promise<number> {
   });
   if (bsCode !== 0) {
     log.warn(
-      `Cookies were written, but bootstrap-auth failed. The next mission will auto-reauth (or fail again).`,
+      `Cookies were written, but the BB-side validation failed. ` +
+        `Next \`monkey "..."\` run will retry; if it also fails, re-export with \`monkey auth ${opts.targetName} --reset\`.`,
     );
-    log.info(`  Retry manually: monkey bootstrap-auth --target ${opts.targetName}`);
     return bsCode;
   }
   return 0;

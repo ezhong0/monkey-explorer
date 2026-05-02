@@ -121,9 +121,13 @@ export const DefaultsSchema = z.object({
 
 // ─── Target block (per-app being tested) ───
 //
-// `contextId` is empty string until bootstrap-auth runs; non-empty after.
-// `lastSignedInAt` is empty string until signIn post-check confirms success;
-// only THEN is the target truly bootstrapped. Used by `targetIsBootstrapped`.
+// `contextId` is the BB-side cookie store handle. Empty until first
+// bootstrap-auth runs, then stable for the lifetime of the target. Bootstrap
+// runs at the start of every `monkey "..."` invocation, overwriting cookies
+// in the same context — so cookies are always fresh at mission time. The
+// stable handle just prevents leaking new BB contexts on every run (BB's
+// SDK has no contexts.delete).
+//
 // `lastUsed` is empty until first run. Datetime-or-empty caught a
 // past bug where a Date object was assigned without `.toISOString()`.
 
@@ -133,7 +137,6 @@ export const TargetSchema = z.object({
   url: z.string().url(),
   authMode: AuthModeSchema,
   contextId: z.string(),
-  lastSignedInAt: EmptyOrDatetimeSchema,
   lastUsed: EmptyOrDatetimeSchema,
 });
 

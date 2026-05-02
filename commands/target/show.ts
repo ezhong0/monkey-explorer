@@ -34,8 +34,7 @@ export async function runTargetShow(name: string | undefined): Promise<number> {
   if (testEmail) out.out(`testEmail:      ${testEmail}`);
   if (testPasswordSet) out.out(`testPassword:   ***`);
 
-  out.out(`contextId:      ${target.contextId || '(none)'}`);
-  out.out(`lastSignedInAt: ${target.lastSignedInAt || '(never)'}`);
+  out.out(`contextId:      ${target.contextId || '(minted on first run)'}`);
   out.out(`lastUsed:       ${target.lastUsed || '(never)'}`);
   return 0;
 }

@@ -213,7 +213,6 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     url,
     authMode,
     contextId: '',
-    lastSignedInAt: '',
     lastUsed: '',
   };
 

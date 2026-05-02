@@ -230,7 +230,8 @@ Usage:
   monkey target show <name>    Show a specific target
 
 Test-credentials password is redacted. Shows: URL, auth mode, sign-in URL,
-test email, contextId (or "not bootstrapped"), and lastUsed timestamp.
+test email, contextId (BB cookie store handle, minted on first run), and
+lastUsed timestamp.
 `,
 
   current: `monkey current — print the current target.

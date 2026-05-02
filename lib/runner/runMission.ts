@@ -62,9 +62,6 @@ export interface RunMissionOpts {
   adjudicatorModel?: string;
   credentials: Credentials;
   signal: AbortSignal;
-  // Auto-reauth callback — runMission asks the caller to refresh the
-  // BB context's cookie when probe returns sign-in-page.
-  onReauthNeeded: () => Promise<void>;
 }
 
 function logPrefix(index: number, total: number): string {
@@ -144,24 +141,20 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     });
   }
 
-  // Probe → maybe re-auth.
+  // Probe to confirm the session inherited valid auth from the just-bootstrapped
+  // context. Bootstrap ran moments ago in commands/run.ts so this should always
+  // pass for non-`none` auth modes; if it doesn't, something's wrong with the
+  // target's auth (cookies revoked, app outage, etc.) and we fail fast.
   try {
     const page = await stagehandHandle.page();
-    let probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url, authModeKind: opts.authMode.kind });
-
-    if (probeResult.kind === 'sign-in-page') {
-      log.fail(`${prefix} Auth expired. Re-authenticating…`);
-      await opts.onReauthNeeded(); // refreshes BB context cookie
-      // After re-auth, the session's cookie may need a re-navigation.
-      probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url, authModeKind: opts.authMode.kind });
-    }
+    const probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url, authModeKind: opts.authMode.kind });
 
     if (probeResult.kind !== 'ok') {
       const reason =
         probeResult.kind === 'unreachable'
           ? `unreachable: ${probeResult.details}`
           : probeResult.kind === 'sign-in-page'
-            ? `re-auth failed; run \`monkey bootstrap-auth --target ${opts.targetName}\``
+            ? `not signed in (bootstrap just ran but cookies didn't apply). Run \`monkey auth ${opts.targetName}\` to refresh.`
             : `unknown auth state: ${probeResult.details}`;
       return await finalize(opts, {
         session,

@@ -11,7 +11,7 @@ import * as log from '../lib/log/stderr.js';
 import { buildJsonOutput, emitJson } from '../lib/log/json.js';
 import { requireGlobalState } from '../lib/state/load.js';
 import { updateTarget } from '../lib/state/save.js';
-import { resolveTarget, targetIsBootstrapped } from '../lib/state/predicates.js';
+import { resolveTarget } from '../lib/state/predicates.js';
 import { getReportsBaseDir } from '../lib/state/path.js';
 import { createClient } from '../lib/bb/client.js';
 import { sweepStaleTmpFiles, sweepStaleRunningReports } from '../lib/report/write.js';
@@ -133,11 +133,12 @@ export async function runRun(opts: RunOpts): Promise<number> {
     return 0;
   }
 
-  // Auto-bootstrap if target isn't fully bootstrapped (no contextId, OR
-  // contextId exists but lastSignedInAt is empty — meaning a previous
-  // bootstrap minted a context but signIn never succeeded). Skip for `none`.
-  if (!targetIsBootstrapped(target) && target.authMode.kind !== 'none') {
-    log.warn(`Target "${targetName}" not bootstrapped — running bootstrap-auth first.`);
+  // Always bootstrap before missions. Eliminates the staleness bug class
+  // (mission sessions inheriting old context cookies) by guaranteeing the
+  // BB context has fresh cookies right before any mission session attaches.
+  // Skipped only for auth-mode=none.
+  if (target.authMode.kind !== 'none') {
+    log.step(`Bootstrapping auth for "${targetName}"…`);
     const code = await runBootstrapAuth({
       targetName,
       nonInteractive: opts.nonInteractive,
@@ -145,7 +146,7 @@ export async function runRun(opts: RunOpts): Promise<number> {
     if (code !== 0) return code;
   }
 
-  // Re-load state in case bootstrap-auth wrote a contextId.
+  // Re-load state in case bootstrap-auth minted a fresh contextId.
   const refreshedState = await requireGlobalState();
   const refreshedTarget = refreshedState.targets[targetName]!;
 
@@ -180,10 +181,6 @@ export async function runRun(opts: RunOpts): Promise<number> {
     credentials,
     invocationId,
     signal: getRootSignal(),
-    onReauthNeeded: async () => {
-      log.fail('Auth expired. Re-authenticating…');
-      await runBootstrapAuth({ targetName, nonInteractive: opts.nonInteractive });
-    },
   });
 
   // Update lastUsed (best-effort — last-write-wins on concurrent runs).

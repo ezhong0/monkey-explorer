@@ -1,11 +1,13 @@
-// `monkey bootstrap-auth [--target <name>]` — create or refresh the BB
-// context's cookie for a target.
+// Bootstrap a Browserbase context with fresh auth cookies for a target.
 //
-// Idempotent: reuses the target's existing contextId if present, creates a
-// new one if missing. Always runs the configured signIn flow (so a re-run
-// after cookie expiry refreshes it). lastSignedInAt is written ONLY after
-// the post-signIn check confirms success — so `targetIsBootstrapped()` is
-// accurate.
+// Idempotent: reuses the target's existing contextId if present, mints a new
+// one (and persists it) if missing. Always runs the configured signIn flow,
+// overwriting whatever cookies the context had before. Sessions created
+// after bootstrap inherit the fresh cookies.
+//
+// Called automatically at the start of every `monkey "..."` invocation, AND
+// directly via `monkey auth <name>` for the Chrome ceremony / smoke test.
+// No `lastSignedInAt` field — bootstrap is always-on, not gated by past state.
 
 import { randomUUID } from 'node:crypto';
 import * as log from '../lib/log/stderr.js';
@@ -31,32 +33,28 @@ export interface BootstrapAuthOpts {
 export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number> {
   const state = await requireGlobalState();
   const { name, target } = resolveTarget(state, opts.targetName);
-  const credentials = state.credentials!; // guaranteed by requireGlobalState
+  const credentials = state.credentials!;
 
   if (target.authMode.kind === 'none') {
     log.info(`Auth mode for "${name}" is "none"; nothing to bootstrap.`);
     return 0;
   }
 
-  // Make sure SIGINT handling is installed even if bootstrap-auth is called
-  // standalone (i.e., not from runRun which already installs it). Idempotent.
   installSigintHandler();
   const signal = getRootSignal();
-
   const bb = createClient(credentials.browserbaseApiKey);
 
-  // Reuse existing contextId or mint a new one.
+  // Reuse existing contextId or mint a new one. The context handle is stable
+  // across runs (BB has no contexts.delete; reusing prevents leakage). The
+  // cookies INSIDE it get overwritten on every bootstrap call.
   let contextId = target.contextId;
-  let fresh = false;
   if (!contextId) {
     contextId = await createContext(bb, credentials.browserbaseProjectId);
-    fresh = true;
-    // Persist immediately so we don't leak the context if signIn later fails.
-    // lastSignedInAt stays empty until post-check passes.
     await updateTarget(name, (t) => ({ ...t, contextId }));
+    log.step(`Created new context: ${contextId}`);
+  } else {
+    log.step(`Reusing existing context: ${contextId}`);
   }
-
-  log.step(fresh ? `Created new context: ${contextId}` : `Reusing existing context: ${contextId}`);
 
   log.step('Creating Browserbase session…');
   const session = await createSession({
@@ -103,11 +101,9 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       );
       if (target.authMode.kind === 'cookie-jar') {
         log.info(
-          `  Cookies in the jar may have aged out (auth-provider session JWTs typically expire in ~1h).`,
+          `  Cookies in the jar may have aged out (auth-provider session JWTs typically expire in ~5 min).`,
         );
-        log.info(
-          `  Re-export with:  monkey export-cookies ${name}`,
-        );
+        log.info(`  Re-export with:  monkey auth ${name}`);
       }
     } else {
       log.warn('Could not confirm signed-in state. Inspect the replay if needed.');
@@ -121,21 +117,14 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
     await session.close();
   }
 
-  // ONLY mark the target as fully bootstrapped after the post-check passed.
-  // This is what `targetIsBootstrapped` tests against.
   if (signedInOk) {
-    const now = new Date().toISOString();
-    await updateTarget(name, (t) => ({ ...t, lastSignedInAt: now }));
-  }
-
-  log.ok(`Context ID for "${name}": ${contextId}`);
-  if (signedInOk) {
-    log.ok(`Ready. Subsequent runs against "${name}" will reuse this context.`);
+    log.ok(`Ready. Subsequent missions in this run will share context ${contextId}.`);
+    return 0;
   } else {
-    log.warn(`Bootstrap completed but sign-in could not be confirmed. The next run may auto-reauth.`);
+    log.fail(`Bootstrap could not confirm sign-in. Aborting before any mission session spawns.`);
     if (target.authMode.kind === 'cookie-jar') {
-      log.info(`  If auto-reauth keeps failing: monkey export-cookies ${name}`);
+      log.info(`  Refresh cookies:  monkey auth ${name}`);
     }
+    return 1;
   }
-  return 0;
 }

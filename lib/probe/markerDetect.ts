@@ -24,7 +24,11 @@ import { z } from 'zod';
 const SIGN_IN_PATH_RE = /\/sign-?in|\/login|\/auth/i;
 
 const PASSWORD_INPUT_TIMEOUT_MS = 3000;
-const SETTLE_NETWORK_IDLE_TIMEOUT_MS = 5000;
+// Wait up to 10s for the URL to leave a sign-in path. Replaces the older
+// `networkidle` wait which was too eager — Clerk's submit-redirect-set-cookie
+// chain can briefly idle the network mid-flight, so isSignedIn fired before
+// the redirect actually happened.
+const URL_TRANSITION_TIMEOUT_MS = 10_000;
 // 2500ms (was 1500ms): Clerk's frontend refresh dance is sometimes slower
 // than networkidle suggests (background polling can fire before refresh
 // settles). The longer delay catches the residual race at the cost of
@@ -36,16 +40,25 @@ const SignedInSchema = z.object({
   reasoning: z.string().optional(),
 });
 
-/** After page.goto(), wait for the network to settle so any auth-provider
- *  refresh dance (Clerk, Auth0) has time to complete before isSignedIn is
- *  called. Capped because some apps have constant background polling that
- *  would otherwise prevent networkidle from ever firing. */
+/** Wait for the post-sign-in URL transition. Returns when the page's URL
+ *  is no longer on a sign-in path, or after URL_TRANSITION_TIMEOUT_MS.
+ *
+ *  This is the right signal for "auth completed" — networkidle was too
+ *  eager (Clerk's submit→redirect→set-cookie chain can briefly idle the
+ *  network mid-flight) and DOM heuristics are slow + probabilistic. Url
+ *  transition is the framework-built-in signal: `page.waitForURL` returns
+ *  immediately if the predicate already matches (cookie-jar happy path)
+ *  and waits for the actual navigation otherwise (password submit path). */
 export async function waitForAuthSettled(page: Page): Promise<void> {
-  await page
-    .waitForLoadState('networkidle', { timeout: SETTLE_NETWORK_IDLE_TIMEOUT_MS })
-    .catch(() => {
-      // Idle never reached within the budget — fine, we tried. Continue.
+  try {
+    await page.waitForURL((url) => !SIGN_IN_PATH_RE.test(url.toString()), {
+      timeout: URL_TRANSITION_TIMEOUT_MS,
     });
+  } catch {
+    // Timeout: URL never left the sign-in path. The downstream isSignedIn
+    // check / health check will report the failure. Don't throw here —
+    // bootstrap-auth's caller decides what to do with a not-signed-in state.
+  }
 }
 
 export async function isSignedIn(opts: {

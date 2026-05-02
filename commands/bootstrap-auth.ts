@@ -91,14 +91,22 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       signal,
     });
 
-    // Auth-state-settle wait owned at the dispatch boundary — auth-mode
-    // implementations don't have to remember this individually. After
-    // dispatchSignIn the page has navigated to the post-signed-in URL but
-    // the auth-provider's client-side refresh dance (Clerk/Auth0) may
-    // still be in flight; isSignedIn run too eagerly observes the
-    // pre-refresh state.
+    // Wait for URL to leave the sign-in path. Owned at the dispatch boundary
+    // so auth-mode implementations don't individually re-implement the wait.
     await waitForAuthSettled(page);
-    const signedIn = await isSignedIn({ page, stagehand: stagehandHandle.stagehand });
+
+    // Confirm auth. If the target has a healthCheckUrl, that's the
+    // server-confirmed signal — make a request and check the status.
+    // Otherwise fall back to the UI heuristic (isSignedIn).
+    let signedIn: boolean | 'unknown';
+    if (target.healthCheckUrl) {
+      const ok = await healthCheck(page, target.url, target.healthCheckUrl);
+      signedIn = ok;
+      log.info(`  Health check ${target.healthCheckUrl}: ${ok ? 'ok' : 'unauthorized/unreachable'}`);
+    } else {
+      signedIn = await isSignedIn({ page, stagehand: stagehandHandle.stagehand });
+    }
+
     if (signedIn === true) {
       log.ok('Signed in.');
       signedInOk = true;
@@ -133,5 +141,40 @@ export async function runBootstrapAuth(opts: BootstrapAuthOpts): Promise<number>
       log.info(`  Refresh cookies:  monkey auth ${name}`);
     }
     return 1;
+  }
+}
+
+/** Server-confirmed auth check. Resolves the (possibly relative) healthCheckUrl
+ *  against the target's base URL, then GETs it from inside the browser context
+ *  (so the request inherits the just-signed-in cookies via `credentials: 'include'`).
+ *  Returns true on 2xx/304, false on 401/403/5xx/network error/timeout.
+ *
+ *  Uses page.evaluate (string form — Stagehand v3's argument-passing form
+ *  doesn't forward args, see lib/auth/cookieJar.ts:155 for reference). */
+async function healthCheck(
+  page: import('playwright-core').Page,
+  targetBase: string,
+  healthCheckUrl: string,
+): Promise<boolean> {
+  let fullUrl: string;
+  try {
+    fullUrl = new URL(healthCheckUrl, targetBase).toString();
+  } catch {
+    log.warn(`  Health check: invalid healthCheckUrl ${JSON.stringify(healthCheckUrl)}; skipping.`);
+    return false;
+  }
+
+  const TIMEOUT_MS = 10_000;
+  const expr = `Promise.race([
+    fetch(${JSON.stringify(fullUrl)}, { credentials: 'include' }).then(r => r.status).catch(() => 0),
+    new Promise(r => setTimeout(() => r(-1), ${TIMEOUT_MS})),
+  ])`;
+  try {
+    const status = await page.evaluate(expr);
+    if (typeof status !== 'number') return false;
+    if (status === -1 || status === 0) return false;
+    return (status >= 200 && status < 300) || status === 304;
+  } catch {
+    return false;
   }
 }

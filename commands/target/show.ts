@@ -36,5 +36,8 @@ export async function runTargetShow(name: string | undefined): Promise<number> {
 
   out.out(`contextId:      ${target.contextId || '(minted on first run)'}`);
   out.out(`lastUsed:       ${target.lastUsed || '(never)'}`);
+  if (target.healthCheckUrl) {
+    out.out(`healthCheckUrl: ${target.healthCheckUrl}`);
+  }
   return 0;
 }

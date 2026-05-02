@@ -43,6 +43,7 @@ interface Argv {
   'test-password'?: string;
   'custom-path'?: string;
   'cookie-jar-path'?: string;
+  'health-check-url'?: string;
   'skip-bootstrap'?: boolean;
   // export-cookies flags
   out?: string;
@@ -65,6 +66,7 @@ function parseArgs(argv: string[]): Argv {
       'test-password',
       'custom-path',
       'cookie-jar-path',
+      'health-check-url',
       'out',
     ],
     boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap', 'reset'],
@@ -87,6 +89,8 @@ Subcommands:
                          --auth-mode: password | cookie-jar | none
                          password: --sign-in-url, --test-email, --test-password
                          cookie-jar: --cookie-jar-path
+                         Optional: --health-check-url <path> (server-confirmed
+                         post-sign-in check, e.g. "/api/getUser").
                          Flags: --skip-bootstrap.
   target list          Show all targets, * marks current.
   target use <name>    Switch the current target.
@@ -385,6 +389,7 @@ async function main(argv: string[]): Promise<number> {
             testPassword: args['test-password'],
             customPath: args['custom-path'],
             cookieJarPath: args['cookie-jar-path'],
+            healthCheckUrl: args['health-check-url'],
             skipBootstrap: args['skip-bootstrap'],
           },
         });

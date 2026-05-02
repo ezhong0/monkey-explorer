@@ -22,12 +22,16 @@ import { runBootstrapAuth } from '../bootstrap-auth.js';
 export interface TargetAddOpts {
   name?: string;
   url?: string;
-  authMode?: string; // 'ai-form' | 'interactive' | 'none' | 'custom' | 'cookie-jar'
+  authMode?: string; // 'password' | 'cookie-jar' | 'none'
   signInUrl?: string;
   testEmail?: string;
   testPassword?: string;
   customPath?: string;
   cookieJarPath?: string;
+  /** Optional. Path or absolute URL hit after sign-in to confirm auth via
+   *  HTTP status (200 = signed in). Server-confirmed; more robust than
+   *  the UI heuristic. Tamarind: "/api/getUser". */
+  healthCheckUrl?: string;
   skipBootstrap?: boolean;
   nonInteractive?: boolean;
 }
@@ -214,6 +218,7 @@ export async function runTargetAdd(opts: TargetAddOpts): Promise<number> {
     authMode,
     contextId: '',
     lastUsed: '',
+    ...(opts.healthCheckUrl ? { healthCheckUrl: opts.healthCheckUrl } : {}),
   };
 
   // Save with new target. First-ever target → also sets currentTarget.

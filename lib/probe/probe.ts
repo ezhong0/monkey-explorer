@@ -11,7 +11,7 @@
 
 import type { Page } from 'playwright-core';
 import type { Stagehand } from '@browserbasehq/stagehand';
-import { isSignedIn } from './markerDetect.js';
+import { isSignedIn, waitForAuthSettled } from './markerDetect.js';
 import { validateTargetUrl } from './urlPolicy.js';
 import type { ProbeResult } from '../types.js';
 
@@ -56,6 +56,9 @@ export async function probe(opts: {
   // Stage 3: auth state — skipped for auth-mode=none targets (no auth to check).
   if (opts.authModeKind === 'none') return { kind: 'ok' };
 
+  // Auth-provider refresh dance happens client-side after DCL — give it
+  // up to 5s to settle before the marker check.
+  await waitForAuthSettled(opts.page);
   const signedIn = await isSignedIn({ page: opts.page, stagehand: opts.stagehand });
 
   if (signedIn === true) return { kind: 'ok' };

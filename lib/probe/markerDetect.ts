@@ -5,6 +5,14 @@
 // Phase 0 finding: heuristic timeout bumped to 3000ms (was 1000ms) since
 // Clerk/Auth0 render password inputs lazily ~1.5s after navigation.
 //
+// Auth-provider refresh race (2026-05-01): cookie-jar mode injects cookies
+// whose JWTs may already have expired (Clerk uses 5-min JWTs but the
+// refresh token is good for weeks). On navigation, Clerk's frontend SDK
+// refreshes the JWT *after* DOMContentLoaded — so calling isSignedIn too
+// eagerly observes the pre-refresh state. Mitigation:
+//   - callers should `waitForAuthSettled(page)` after page.goto
+//   - this function retries once on negative result with a short delay
+//
 // Q5 from open questions: if both heuristic and AI fallback fail, default
 // to "treat as signed-out" — fail-safe (re-auths unnecessarily but never
 // runs as wrong identity).
@@ -16,13 +24,41 @@ import { z } from 'zod';
 const SIGN_IN_PATH_RE = /\/sign-?in|\/login|\/auth/i;
 
 const PASSWORD_INPUT_TIMEOUT_MS = 3000;
+const SETTLE_NETWORK_IDLE_TIMEOUT_MS = 5000;
+const RETRY_ON_NEGATIVE_DELAY_MS = 1500;
 
 const SignedInSchema = z.object({
   signedIn: z.boolean(),
   reasoning: z.string().optional(),
 });
 
+/** After page.goto(), wait for the network to settle so any auth-provider
+ *  refresh dance (Clerk, Auth0) has time to complete before isSignedIn is
+ *  called. Capped because some apps have constant background polling that
+ *  would otherwise prevent networkidle from ever firing. */
+export async function waitForAuthSettled(page: Page): Promise<void> {
+  await page
+    .waitForLoadState('networkidle', { timeout: SETTLE_NETWORK_IDLE_TIMEOUT_MS })
+    .catch(() => {
+      // Idle never reached within the budget — fine, we tried. Continue.
+    });
+}
+
 export async function isSignedIn(opts: {
+  page: Page;
+  stagehand: Stagehand;
+}): Promise<boolean | 'unknown'> {
+  const first = await checkSignedInOnce(opts);
+  if (first === true) return true;
+
+  // Negative on first attempt — could be a transient pre-refresh state.
+  // One retry after a short delay catches the auth-provider refresh race
+  // without doubling the latency for happy-path checks.
+  await new Promise((r) => setTimeout(r, RETRY_ON_NEGATIVE_DELAY_MS));
+  return checkSignedInOnce(opts);
+}
+
+async function checkSignedInOnce(opts: {
   page: Page;
   stagehand: Stagehand;
 }): Promise<boolean | 'unknown'> {

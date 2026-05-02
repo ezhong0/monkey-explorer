@@ -138,13 +138,6 @@ export const TargetSchema = z.object({
   authMode: AuthModeSchema,
   contextId: z.string(),
   lastUsed: EmptyOrDatetimeSchema,
-  // Optional: a URL or path to GET after sign-in to confirm auth completed.
-  // Server-confirmed signal (200/204/304 = signed in, 401/403/5xx = not).
-  // Robust against UI-layer edge cases that fool the heuristic isSignedIn
-  // (intermediate routes like /verify-email, mid-redirect snapshots, etc.).
-  // Path or absolute URL; relative paths resolve against `url`.
-  // Example for Tamarind: "/api/getUser".
-  healthCheckUrl: z.string().optional(),
 });
 
 // ─── Top-level state ───

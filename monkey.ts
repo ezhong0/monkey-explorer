@@ -37,15 +37,12 @@ interface Argv {
   'anthropic-key'?: string;
   // target add flags
   url?: string;
-  'auth-mode'?: string;
   'sign-in-url'?: string;
   'test-email'?: string;
   'test-password'?: string;
-  'custom-path'?: string;
-  'cookie-jar-path'?: string;
-  'health-check-url'?: string;
+  'no-auth'?: boolean;
   'skip-bootstrap'?: boolean;
-  // export-cookies flags
+  // auth flags
   out?: string;
   reset?: boolean;
 }
@@ -60,16 +57,12 @@ function parseArgs(argv: string[]): Argv {
       'bb-project',
       'anthropic-key',
       'url',
-      'auth-mode',
       'sign-in-url',
       'test-email',
       'test-password',
-      'custom-path',
-      'cookie-jar-path',
-      'health-check-url',
       'out',
     ],
-    boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap', 'reset'],
+    boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap', 'reset', 'no-auth'],
     alias: { h: 'help', v: 'version' },
   }) as Argv;
 }
@@ -85,13 +78,13 @@ Subcommands:
                          Flags: --browserbase-key, --openai-key, --bb-project,
                          --anthropic-key (all-or-nothing for non-interactive).
   config               Edit defaults (models, caps).
-  target add <name>    Add a named target (URL, auth, test creds).
-                         --auth-mode: password | cookie-jar | none
-                         password: --sign-in-url, --test-email, --test-password
-                         cookie-jar: --cookie-jar-path
-                         Optional: --health-check-url <path> (server-confirmed
-                         post-sign-in check, e.g. "/api/getUser").
-                         Flags: --skip-bootstrap.
+  target add <name>    Add a named target. Auth strategy is inferred:
+                         --test-email + --test-password → password mode
+                         --no-auth                       → public app
+                         (neither, default)              → Chrome ceremony
+                         Required: --url
+                         Optional: --sign-in-url (default: <origin>/sign-in),
+                                   --skip-bootstrap.
   target list          Show all targets, * marks current.
   target use <name>    Switch the current target.
   target rm <name>     Delete a target.
@@ -171,31 +164,29 @@ For details on each: \`monkey target <subcommand> --help\`.
   'target:add': `monkey target add <name> — register a new target.
 
 Usage:
-  monkey target add <name>            Interactive — prompts for each field
-  monkey target add <name> \\
-    --url <url> --auth-mode <kind> [...]
-                                      Non-interactive (CI / agents)
+  monkey target add <name>                  Interactive — asks what you have
+  monkey target add <name> --url <url>      Default: opens Chrome ceremony
+  monkey target add <name> --url <url> \\
+    --test-email <email> --test-password ***   Password-form auth
+  monkey target add <name> --url <url> --no-auth   Public app
 
-Required flags for non-interactive:
-  --url <app-url>           The app to test (e.g., https://app.example.com)
-  --auth-mode <kind>        password | cookie-jar | none
+Auth strategy is inferred from what you pass:
+  --test-email + --test-password → Stagehand fills the sign-in form
+  --no-auth                       → public app, no auth ceremony
+  (neither)                       → opens local Chrome once, you sign in
+                                    with whatever method (Google, MFA, magic
+                                    link, anything). Cookies live in the BB
+                                    context until the auth provider's
+                                    refresh token expires.
 
-Auth-mode-specific flags:
-  password       Requires --sign-in-url, --test-email, --test-password.
-                 Stagehand AI-fills the form. Works for Clerk, Auth0, plain HTML.
-  none           No further flags. Public app, no auth.
-  cookie-jar     Requires --cookie-jar-path (Playwright storageState JSON;
-                 resolved to absolute; injected into BB context at bootstrap).
-                 Use this for Google OAuth / SSO / MFA. Sign in once locally
-                 with \`monkey export-cookies <name>\`.
+Optional flags:
+  --sign-in-url <url>     Override the default \`<origin>/sign-in\`
+                          (only used in password mode)
+  --skip-bootstrap        Don't auto-run the ceremony / bootstrap. Useful
+                          for CI when you'll run \`monkey auth <name>\`
+                          interactively later.
 
-Other flags:
-  --skip-bootstrap            Skip the auto bootstrap-auth at the end. Run
-                            \`monkey bootstrap-auth --target <name>\` later.
-
-The first added target also becomes the current target. Auto-runs
-bootstrap-auth at the end unless --skip-bootstrap or auth-mode is "none".
-Partial flags are rejected — pass all required, or none.
+The first added target also becomes the current target.
 `,
 
   'target:list': `monkey target list — list all named targets.
@@ -383,13 +374,10 @@ async function main(argv: string[]): Promise<number> {
           nonInteractive: Boolean(args['non-interactive']),
           addFlags: {
             url: args.url,
-            authMode: args['auth-mode'],
-            signInUrl: args['sign-in-url'],
             testEmail: args['test-email'],
             testPassword: args['test-password'],
-            customPath: args['custom-path'],
-            cookieJarPath: args['cookie-jar-path'],
-            healthCheckUrl: args['health-check-url'],
+            signInUrl: args['sign-in-url'],
+            noAuth: args['no-auth'],
             skipBootstrap: args['skip-bootstrap'],
           },
         });

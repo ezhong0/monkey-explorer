@@ -88,8 +88,17 @@ export async function createStagehand(opts: CreateStagehandOpts): Promise<Stageh
       return p as unknown as Page;
     },
     async close(): Promise<void> {
+      // Capped at 15s: if Stagehand's underlying CDP transport is broken
+      // (e.g. the wallclock timer just torched the BB session mid-step),
+      // stagehand.close() can hang. A hung close in finalize blocks the
+      // whole runMissions Promise.all.
       try {
-        await stagehand.close();
+        await Promise.race([
+          stagehand.close(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('stagehand.close timed out after 15s')), 15_000),
+          ),
+        ]);
       } catch {
         // Best-effort.
       }

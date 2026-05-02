@@ -66,13 +66,21 @@ export async function createSession(opts: {
     replayUrl,
     close: async () => {
       // bb.sessions.update with status: 'REQUEST_RELEASE' — idempotent.
+      // Capped at 15s: SDK has no built-in timeout, and a hung release call
+      // here blocks runMission's finalize → blocks the whole runMissions
+      // Promise.all. Released sessions are best-effort anyway.
       try {
-        await opts.bb.sessions.update(session.id, {
-          projectId: opts.projectId,
-          status: 'REQUEST_RELEASE',
-        });
+        await Promise.race([
+          opts.bb.sessions.update(session.id, {
+            projectId: opts.projectId,
+            status: 'REQUEST_RELEASE',
+          }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('session.close timed out after 15s')), 15_000),
+          ),
+        ]);
       } catch {
-        // Best-effort; session may already be released.
+        // Best-effort; session may already be released or the API may be hung.
       }
     },
   };

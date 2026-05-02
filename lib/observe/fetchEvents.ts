@@ -30,6 +30,13 @@ export interface CollectedEvents {
   networkFailures: NetworkFailure[];
 }
 
+// Cap how long we'll wait on Browserbase's logs.list before giving up. The
+// SDK call has no built-in timeout, and observed-in-the-wild it can hang
+// indefinitely after a session closes in unusual ways (e.g. wallclock fire
+// during the agent's last step). A hung fetch here blocks runMission's
+// finalize → blocks runMissions Promise.all → blocks the whole run.
+const LOGS_FETCH_TIMEOUT_MS = 30_000;
+
 export async function fetchSessionEvents(opts: {
   bb: Browserbase;
   sessionId: string;
@@ -37,10 +44,26 @@ export async function fetchSessionEvents(opts: {
 }): Promise<CollectedEvents> {
   let logs: SessionLog[] = [];
   try {
-    const response = await opts.bb.sessions.logs.list(opts.sessionId);
+    const response = await Promise.race([
+      opts.bb.sessions.logs.list(opts.sessionId),
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`logs.list timed out after ${LOGS_FETCH_TIMEOUT_MS}ms`)),
+          LOGS_FETCH_TIMEOUT_MS,
+        ),
+      ),
+    ]);
     logs = (response as unknown as SessionLog[]) ?? [];
-  } catch {
-    // Session may have been released too quickly to have logs available; return empty.
+  } catch (err) {
+    // Session may have been released too quickly, OR the logs endpoint hung
+    // and we timed out. Either way: return empty rather than block the run.
+    const msg = (err as Error).message;
+    if (msg.includes('timed out')) {
+      logStderr.warn(
+        `fetchSessionEvents: ${msg} for session ${opts.sessionId}. ` +
+          `Findings will be incomplete; replay still available.`,
+      );
+    }
     return { consoleErrors: [], networkFailures: [] };
   }
 

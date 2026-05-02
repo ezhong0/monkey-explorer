@@ -1,17 +1,27 @@
-// "cookie-jar" auth mode — read a Playwright storageState JSON, inject the
-// cookies into the BB context via CDP `Storage.setCookies`, seed any
-// per-origin localStorage, and navigate to the target so the post-check
-// probe sees a signed-in page.
+// "cookie-jar" auth mode — capture a Playwright storageState (cookies + per-
+// origin localStorage), inject it into the BB context via CDP, and navigate
+// the BB session so the post-check probe sees a signed-in page.
 //
-// Security: cookies are filtered to the target's eTLD+1 to avoid leaking
-// unrelated session credentials (Google, GitHub, etc.) into the BB context.
+// Two sources for the storageState, tried in order:
+//   1. Silent extract from the user's persistent local Chrome profile
+//      (~/.config/monkey-explorer/chrome-profile/). Headless launch +
+//      navigate triggers Clerk's frontend to refresh the JWT, so we capture
+//      genuinely fresh cookies. Zero UI; ~3-5s overhead per run.
+//   2. Jar JSON file fallback (last-known-good captured by `monkey auth`'s
+//      visible ceremony). Used when the profile is locked, missing, or
+//      cookies are too stale for headless refresh.
 //
-// File format is Playwright's `storageState` shape — produced by
-// `await context.storageState({ path })` or by browser extensions like
-// cookie-editor.
+// If both fail, the caller's post-check (URL still on sign-in) reports
+// the failure and tells the user to run `monkey auth <name>` interactively.
+//
+// Security: cookies are filtered to the target's eTLD+1 (plus a small
+// allow-list of auth-provider domains: clerk.accounts.dev, vercel.live,
+// accounts.google.com, auth0.com, okta.com) to avoid leaking unrelated
+// session credentials.
 
-import { existsSync, statSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { existsSync, statSync, chmodSync, mkdirSync } from 'node:fs';
+import { readFile, writeFile, rename } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { ZodError } from 'zod';
 import type { Stagehand } from '@browserbasehq/stagehand';
 import type { Page } from 'playwright-core';
@@ -20,6 +30,8 @@ import {
   type StorageState,
   type StorageStateCookie,
 } from '../state/schema.js';
+import { getChromeProfileDir } from '../state/path.js';
+import { silentProfileExtract, ProfileExtractError } from './profileExtract.js';
 import * as log from '../log/stderr.js';
 
 export class CookieJarError extends Error {
@@ -41,7 +53,31 @@ export interface CookieJarSignInOpts {
 }
 
 export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> {
-  const jar = await loadAndValidate(opts.jarPath, opts.targetName);
+  // Try silent refresh from the persistent Chrome profile first. If it
+  // succeeds, write the result to the jar file (so the file stays useful
+  // as a fallback) and use the fresh cookies. If it fails — profile locked,
+  // missing, or stale — fall back to whatever's in the jar file.
+  let jar: StorageState;
+  try {
+    log.step('Refreshing cookies from local Chrome profile…');
+    const fresh = await silentProfileExtract({
+      profileDir: getChromeProfileDir(),
+      targetUrl: opts.targetUrl,
+    });
+    log.ok(`Captured ${fresh.cookies.length} cookies from profile (fresh JWT).`);
+    // Persist as new last-known-good for the next-run jar fallback.
+    await writeJar(opts.jarPath, fresh).catch((err) => {
+      log.warn(`  Could not write jar to ${opts.jarPath}: ${(err as Error).message}`);
+    });
+    jar = fresh;
+  } catch (err) {
+    if (err instanceof ProfileExtractError) {
+      log.info(`  Silent refresh skipped (${err.kind}); using jar file.`);
+    } else {
+      log.warn(`  Silent refresh errored: ${(err as Error).message}; using jar file.`);
+    }
+    jar = await loadAndValidate(opts.jarPath, opts.targetName);
+  }
 
   // Pre-flight: are ALL cookies expired? Cheap to check before spending
   // BB session time.
@@ -242,6 +278,16 @@ async function loadAndValidate(jarPath: string, targetName: string): Promise<Sto
   }
 
   return jar;
+}
+
+/** Persist a freshly-captured storageState to the jar file (atomic + 0600).
+ *  Used to keep the file useful as a fallback when silent refresh works. */
+async function writeJar(jarPath: string, state: StorageState): Promise<void> {
+  mkdirSync(dirname(jarPath), { recursive: true });
+  const tmp = `${jarPath}.tmp`;
+  await writeFile(tmp, JSON.stringify(state, null, 2) + '\n');
+  chmodSync(tmp, 0o600);
+  await rename(tmp, jarPath);
 }
 
 function isLive(c: StorageStateCookie): boolean {

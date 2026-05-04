@@ -177,78 +177,35 @@ export async function executeAgent(opts: {
     };
   }
 
-  let runningTokens = 0;
-  let budgetExceeded = false;
-  const tokenBudget = opts.tokenBudget;
-
-  // Token-budget enforcement: poll Stagehand's metrics (works in CUA mode
-  // where AI SDK onStepFinish callbacks don't fire). Each mission has its
-  // own Stagehand instance, so metrics are scoped to this mission's tokens.
-  const POLL_MS = 3000;
-  const checkBudget = async (): Promise<void> => {
-    try {
-      const m = await opts.stagehand.metrics;
-      const used = (m.agentPromptTokens ?? 0) + (m.agentCompletionTokens ?? 0);
-      runningTokens = used;
-      if (tokenBudget != null && used > tokenBudget && !budgetExceeded) {
-        budgetExceeded = true;
-        opts.onBudgetExceeded?.();
-      }
-    } catch {
-      // Metrics fetch failed — skip this poll, try again next interval.
-    }
-  };
-  const pollInterval =
-    tokenBudget != null ? setInterval(() => void checkBudget(), POLL_MS) : null;
+  // Budget enforcement attempted with two approaches in Stagehand v3.3:
+  //   - callbacks.onStepFinish: doesn't fire in CUA mode
+  //   - signal: AbortSignal: throws InvalidArgumentError in CUA mode
+  //   - polling stagehand.metrics: silently zeroes out result.usage
+  // None worked. Token-budget plumbing is retained in the schema for a
+  // future Stagehand version that adds a budget hook; today the only
+  // caps that fire are maxSteps and wallClockMs.
+  void opts.tokenBudget;
+  void opts.onBudgetExceeded;
 
   try {
     const result = await agent.execute({
       instruction: opts.instruction.trim(),
       maxSteps: opts.maxSteps,
-      // No `signal` — Stagehand v3.3 throws InvalidArgumentError for CUA
-      // mode if signal is set. Budget enforcement runs out-of-band via
-      // metrics polling above; caller's onBudgetExceeded closes the BB
-      // session, which kills the agent's CDP transport and forces it to
-      // throw naturally.
     });
-    // One final metrics fetch to capture last-step tokens (poll may have
-    // been mid-cycle when execute returned).
-    await checkBudget();
 
-    // Prefer the metrics-poll number (works in CUA mode); fall back to
-    // result.usage for non-CUA modes that surface it that way.
     const usage = (
       result as unknown as {
         usage?: { input_tokens?: number; output_tokens?: number };
       }
     ).usage;
-    const usageFallback =
+    const tokensUsed =
       usage?.input_tokens != null && usage?.output_tokens != null
         ? usage.input_tokens + usage.output_tokens
         : undefined;
-    const tokensUsed =
-      runningTokens > 0
-        ? runningTokens
-        : usageFallback;
 
     const actions = Array.isArray((result as { actions?: unknown[] }).actions)
       ? (result as { actions: unknown[] }).actions
       : [];
-
-    if (budgetExceeded) {
-      return {
-        success: false,
-        message: result.message ?? '',
-        stepsTaken: actions.length,
-        tokensUsed,
-        observations,
-        rawActions: actions,
-        error: {
-          kind: 'rate_limit',
-          message: `Token budget exceeded: ${runningTokens.toLocaleString()} > ${tokenBudget?.toLocaleString()}`,
-        },
-      };
-    }
 
     return {
       success: result.success ?? false,
@@ -259,34 +216,13 @@ export async function executeAgent(opts: {
       rawActions: actions,
     };
   } catch (err) {
-    // If we triggered onBudgetExceeded (caller closed the BB session), the
-    // agent will throw a CDP-transport-closed error. Classify as rate_limit
-    // (→ RunStatus.exceeded_tokens) rather than 'other' so the user sees
-    // the right reason.
-    if (budgetExceeded) {
-      return {
-        success: false,
-        message: '',
-        stepsTaken: 0,
-        tokensUsed: runningTokens > 0 ? runningTokens : undefined,
-        observations,
-        rawActions: [],
-        error: {
-          kind: 'rate_limit',
-          message: `Token budget exceeded: ${runningTokens.toLocaleString()} > ${tokenBudget?.toLocaleString()}`,
-        },
-      };
-    }
     return {
       success: false,
       message: '',
       stepsTaken: 0,
-      tokensUsed: runningTokens > 0 ? runningTokens : undefined,
       observations, // surface anything captured before the failure
       rawActions: [],
       error: classifyError(err),
     };
-  } finally {
-    if (pollInterval) clearInterval(pollInterval);
   }
 }

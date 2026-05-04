@@ -181,44 +181,55 @@ export async function executeAgent(opts: {
   let budgetExceeded = false;
   const tokenBudget = opts.tokenBudget;
 
+  // Token-budget enforcement: poll Stagehand's metrics (works in CUA mode
+  // where AI SDK onStepFinish callbacks don't fire). Each mission has its
+  // own Stagehand instance, so metrics are scoped to this mission's tokens.
+  const POLL_MS = 3000;
+  const checkBudget = async (): Promise<void> => {
+    try {
+      const m = await opts.stagehand.metrics;
+      const used = (m.agentPromptTokens ?? 0) + (m.agentCompletionTokens ?? 0);
+      runningTokens = used;
+      if (tokenBudget != null && used > tokenBudget && !budgetExceeded) {
+        budgetExceeded = true;
+        opts.onBudgetExceeded?.();
+      }
+    } catch {
+      // Metrics fetch failed — skip this poll, try again next interval.
+    }
+  };
+  const pollInterval =
+    tokenBudget != null ? setInterval(() => void checkBudget(), POLL_MS) : null;
+
   try {
     const result = await agent.execute({
       instruction: opts.instruction.trim(),
       maxSteps: opts.maxSteps,
       // No `signal` — Stagehand v3.3 throws InvalidArgumentError for CUA
-      // mode if signal is set. Budget enforcement uses the onBudgetExceeded
-      // callback (caller closes the BB session, which kills the agent's CDP
-      // transport and forces it to throw naturally).
-      callbacks: {
-        // Stagehand v3.3 fires this after every LLM step (CUA + DOM modes).
-        // We use it for streaming token-budget enforcement.
-        onStepFinish: ((step: unknown) => {
-          const u = (step as { usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number } })
-            .usage;
-          const stepTokens =
-            u?.totalTokens ??
-            ((u?.inputTokens ?? 0) + (u?.outputTokens ?? 0)) ??
-            0;
-          runningTokens += stepTokens;
-          if (tokenBudget != null && runningTokens > tokenBudget && !budgetExceeded) {
-            budgetExceeded = true;
-            opts.onBudgetExceeded?.();
-          }
-        }) as never,
-      },
+      // mode if signal is set. Budget enforcement runs out-of-band via
+      // metrics polling above; caller's onBudgetExceeded closes the BB
+      // session, which kills the agent's CDP transport and forces it to
+      // throw naturally.
     });
+    // One final metrics fetch to capture last-step tokens (poll may have
+    // been mid-cycle when execute returned).
+    await checkBudget();
 
+    // Prefer the metrics-poll number (works in CUA mode); fall back to
+    // result.usage for non-CUA modes that surface it that way.
     const usage = (
       result as unknown as {
         usage?: { input_tokens?: number; output_tokens?: number };
       }
     ).usage;
-    const tokensUsed =
+    const usageFallback =
       usage?.input_tokens != null && usage?.output_tokens != null
         ? usage.input_tokens + usage.output_tokens
-        : runningTokens > 0
-          ? runningTokens
-          : undefined;
+        : undefined;
+    const tokensUsed =
+      runningTokens > 0
+        ? runningTokens
+        : usageFallback;
 
     const actions = Array.isArray((result as { actions?: unknown[] }).actions)
       ? (result as { actions: unknown[] }).actions
@@ -275,5 +286,7 @@ export async function executeAgent(opts: {
       rawActions: [],
       error: classifyError(err),
     };
+  } finally {
+    if (pollInterval) clearInterval(pollInterval);
   }
 }

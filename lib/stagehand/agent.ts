@@ -100,9 +100,15 @@ export async function executeAgent(opts: {
   instruction: string;
   maxSteps: number;
   /** Optional hard cost ceiling. After each step, cumulative LLM tokens are
-   *  checked; exceeding this aborts the agent and returns 'rate_limit' error
-   *  (which runMission maps to RunStatus.exceeded_tokens). */
+   *  checked; exceeding this calls `onBudgetExceeded` (caller's job to actually
+   *  stop the agent — typically by closing the BB session, which kills the
+   *  CDP transport and forces the agent to throw). On natural exit, executeAgent
+   *  detects the breach and returns 'rate_limit' error (→ RunStatus.exceeded_tokens). */
   tokenBudget?: number;
+  /** Called once when tokenBudget is exceeded. Caller decides how to halt the
+   *  agent (e.g., session.close()). Stagehand v3.3 doesn't accept AbortSignal
+   *  in CUA mode, so killing the BB session is the only mid-flight stop. */
+  onBudgetExceeded?: () => void;
   signal: AbortSignal;
 }): Promise<AgentResult> {
   const useCua = isCuaCapable(opts.agentModel);
@@ -171,11 +177,6 @@ export async function executeAgent(opts: {
     };
   }
 
-  // Compose abort: parent SIGINT, plus our internal token-budget ceiling.
-  const ctl = new AbortController();
-  const propagateAbort = () => ctl.abort();
-  opts.signal.addEventListener('abort', propagateAbort, { once: true });
-
   let runningTokens = 0;
   let budgetExceeded = false;
   const tokenBudget = opts.tokenBudget;
@@ -184,7 +185,10 @@ export async function executeAgent(opts: {
     const result = await agent.execute({
       instruction: opts.instruction.trim(),
       maxSteps: opts.maxSteps,
-      signal: ctl.signal,
+      // No `signal` — Stagehand v3.3 throws InvalidArgumentError for CUA
+      // mode if signal is set. Budget enforcement uses the onBudgetExceeded
+      // callback (caller closes the BB session, which kills the agent's CDP
+      // transport and forces it to throw naturally).
       callbacks: {
         // Stagehand v3.3 fires this after every LLM step (CUA + DOM modes).
         // We use it for streaming token-budget enforcement.
@@ -196,9 +200,9 @@ export async function executeAgent(opts: {
             ((u?.inputTokens ?? 0) + (u?.outputTokens ?? 0)) ??
             0;
           runningTokens += stepTokens;
-          if (tokenBudget != null && runningTokens > tokenBudget) {
+          if (tokenBudget != null && runningTokens > tokenBudget && !budgetExceeded) {
             budgetExceeded = true;
-            ctl.abort();
+            opts.onBudgetExceeded?.();
           }
         }) as never,
       },
@@ -244,6 +248,24 @@ export async function executeAgent(opts: {
       rawActions: actions,
     };
   } catch (err) {
+    // If we triggered onBudgetExceeded (caller closed the BB session), the
+    // agent will throw a CDP-transport-closed error. Classify as rate_limit
+    // (→ RunStatus.exceeded_tokens) rather than 'other' so the user sees
+    // the right reason.
+    if (budgetExceeded) {
+      return {
+        success: false,
+        message: '',
+        stepsTaken: 0,
+        tokensUsed: runningTokens > 0 ? runningTokens : undefined,
+        observations,
+        rawActions: [],
+        error: {
+          kind: 'rate_limit',
+          message: `Token budget exceeded: ${runningTokens.toLocaleString()} > ${tokenBudget?.toLocaleString()}`,
+        },
+      };
+    }
     return {
       success: false,
       message: '',
@@ -253,7 +275,5 @@ export async function executeAgent(opts: {
       rawActions: [],
       error: classifyError(err),
     };
-  } finally {
-    opts.signal.removeEventListener('abort', propagateAbort);
   }
 }

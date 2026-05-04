@@ -213,6 +213,14 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
       tokenBudget: opts.caps.tokenBudget,
+      onBudgetExceeded: () => {
+        log.warn(`${prefix} Token budget exceeded — closing session.`);
+        // Same mechanism as wallclock fire: closing the BB session kills
+        // the agent's CDP transport, forcing the agent loop to throw.
+        // executeAgent's catch path detects budgetExceeded and reports
+        // the right error kind.
+        session!.close().catch(() => {});
+      },
       signal: opts.signal,
     });
     agentSucceeded = result.success;

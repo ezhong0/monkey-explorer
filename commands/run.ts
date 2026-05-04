@@ -111,6 +111,7 @@ export async function runRun(opts: RunOpts): Promise<number> {
       estimateCostRange({
         missionCount: missions.length,
         wallClockMs: state.defaults.caps.wallClockMs,
+        agentModel: state.defaults.agentModel,
       }),
       missions.length,
     ),
@@ -203,7 +204,7 @@ export async function runRun(opts: RunOpts): Promise<number> {
       }),
     );
   } else {
-    printSummary(results, walledMs);
+    printSummary(results, walledMs, refreshedState.defaults.agentModel);
     const cascade = summarizeCascadingFailures(results);
     if (cascade) {
       log.blank();
@@ -215,7 +216,7 @@ export async function runRun(opts: RunOpts): Promise<number> {
   return anyCompleted ? 0 : 1;
 }
 
-function printSummary(results: MissionResult[], wallMs: number): void {
+function printSummary(results: MissionResult[], wallMs: number, agentModel: string): void {
   log.blank();
   log.info('─── Run summary ────────────────────────────────');
   const total = results.length;
@@ -256,23 +257,28 @@ function printSummary(results: MissionResult[], wallMs: number): void {
 
   let totalDollars = 0;
   let totalTokens = 0;
+  let totalLlmDollars = 0;
   let bbMinutes = 0;
+  let effectiveRate = 0;
   for (const r of results) {
     const ranForMs = ranForMsOf(r.status);
     if (ranForMs == null) continue;
     const tokensUsed =
       r.status.kind === 'completed' ? r.status.tokensUsed : undefined;
-    const c = computeCost({ ranForMs, tokensUsed });
+    const c = computeCost({ ranForMs, tokensUsed, agentModel });
     totalDollars += c.totalDollars;
     if (c.tokens) totalTokens += c.tokens;
+    if (c.llmDollars) totalLlmDollars += c.llmDollars;
     bbMinutes += c.bbMinutes;
+    effectiveRate = c.effectiveRate;
   }
   log.info(formatCostSummary({
     bbMinutes,
     bbDollars: bbMinutes * 0.10,
     tokens: totalTokens || null,
-    llmDollars: totalTokens ? (totalTokens / 1_000_000) * 10 : null,
+    llmDollars: totalTokens ? totalLlmDollars : null,
     totalDollars,
+    effectiveRate,
   }));
 
   const writtenReports = results.map((r) => r.reportPath).filter(Boolean);

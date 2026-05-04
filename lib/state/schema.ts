@@ -83,6 +83,11 @@ export const CapsSchema = z.object({
   sessionTimeoutSec: z.number().int().positive({
     message: 'caps.sessionTimeoutSec must be a positive integer (seconds)',
   }),
+  // Hard cost ceiling: abort the agent loop if cumulative LLM tokens exceed
+  // this budget. Tracked via Stagehand's onStepFinish callback. At 200k for
+  // Opus 4.7 (~$1.40 ceiling) or Haiku 4.5 (~$0.30 ceiling). Optional —
+  // omit for unbounded (then maxSteps + wallClockMs are the only caps).
+  tokenBudget: z.number().int().positive().optional(),
 });
 
 // ─── Credentials block (per-user-machine) ───
@@ -163,6 +168,7 @@ export const DEFAULT_CAPS: Caps = {
   wallClockMs: 600_000, // 10 min
   maxSteps: 60,
   sessionTimeoutSec: 660, // 11 min — outer cap
+  tokenBudget: 200_000,   // ~$1.40 at Opus 4.7, ~$0.28 at Haiku 4.5
 };
 
 export const DEFAULT_MODELS = {

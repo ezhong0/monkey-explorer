@@ -212,6 +212,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
         : undefined,
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
+      tokenBudget: opts.caps.tokenBudget,
       signal: opts.signal,
     });
     agentSucceeded = result.success;
@@ -376,6 +377,7 @@ async function finalize(
     const cost = computeCost({
       ranForMs: ctx.status.ranForMs,
       tokensUsed: ctx.status.tokensUsed,
+      agentModel: opts.agentModel,
     });
     costSummary = formatCostSummary(cost);
   }

@@ -99,6 +99,10 @@ export async function executeAgent(opts: {
   agentBaseURL?: string;
   instruction: string;
   maxSteps: number;
+  /** Optional hard cost ceiling. After each step, cumulative LLM tokens are
+   *  checked; exceeding this aborts the agent and returns 'rate_limit' error
+   *  (which runMission maps to RunStatus.exceeded_tokens). */
+  tokenBudget?: number;
   signal: AbortSignal;
 }): Promise<AgentResult> {
   const useCua = isCuaCapable(opts.agentModel);
@@ -167,10 +171,37 @@ export async function executeAgent(opts: {
     };
   }
 
+  // Compose abort: parent SIGINT, plus our internal token-budget ceiling.
+  const ctl = new AbortController();
+  const propagateAbort = () => ctl.abort();
+  opts.signal.addEventListener('abort', propagateAbort, { once: true });
+
+  let runningTokens = 0;
+  let budgetExceeded = false;
+  const tokenBudget = opts.tokenBudget;
+
   try {
     const result = await agent.execute({
       instruction: opts.instruction.trim(),
       maxSteps: opts.maxSteps,
+      signal: ctl.signal,
+      callbacks: {
+        // Stagehand v3.3 fires this after every LLM step (CUA + DOM modes).
+        // We use it for streaming token-budget enforcement.
+        onStepFinish: ((step: unknown) => {
+          const u = (step as { usage?: { totalTokens?: number; inputTokens?: number; outputTokens?: number } })
+            .usage;
+          const stepTokens =
+            u?.totalTokens ??
+            ((u?.inputTokens ?? 0) + (u?.outputTokens ?? 0)) ??
+            0;
+          runningTokens += stepTokens;
+          if (tokenBudget != null && runningTokens > tokenBudget) {
+            budgetExceeded = true;
+            ctl.abort();
+          }
+        }) as never,
+      },
     });
 
     const usage = (
@@ -181,11 +212,28 @@ export async function executeAgent(opts: {
     const tokensUsed =
       usage?.input_tokens != null && usage?.output_tokens != null
         ? usage.input_tokens + usage.output_tokens
-        : undefined;
+        : runningTokens > 0
+          ? runningTokens
+          : undefined;
 
     const actions = Array.isArray((result as { actions?: unknown[] }).actions)
       ? (result as { actions: unknown[] }).actions
       : [];
+
+    if (budgetExceeded) {
+      return {
+        success: false,
+        message: result.message ?? '',
+        stepsTaken: actions.length,
+        tokensUsed,
+        observations,
+        rawActions: actions,
+        error: {
+          kind: 'rate_limit',
+          message: `Token budget exceeded: ${runningTokens.toLocaleString()} > ${tokenBudget?.toLocaleString()}`,
+        },
+      };
+    }
 
     return {
       success: result.success ?? false,
@@ -200,9 +248,12 @@ export async function executeAgent(opts: {
       success: false,
       message: '',
       stepsTaken: 0,
+      tokensUsed: runningTokens > 0 ? runningTokens : undefined,
       observations, // surface anything captured before the failure
       rawActions: [],
       error: classifyError(err),
     };
+  } finally {
+    opts.signal.removeEventListener('abort', propagateAbort);
   }
 }

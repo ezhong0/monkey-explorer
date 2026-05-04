@@ -2,12 +2,43 @@
 // (Q3 closed: cost tracking is feasible).
 //
 // Browserbase: ~$0.10 per session-minute (Developer plan). Approximate.
-// OpenAI: depends on model; gpt-5.5 estimated ~$5 per 1M input tokens,
-// $15 per 1M output. We don't know the in/out split from `usage.totalTokens`
-// alone, so estimate at ~$10 per 1M total tokens (rough midpoint).
+// LLM: per-model price table. CUA pattern is heavy input (screenshots) /
+// brief output (action calls); we use a 90/10 input/output weighting to
+// derive an effective $/M rate for back-of-the-envelope display.
 
 const BB_DOLLARS_PER_MINUTE = 0.10;
-const OPENAI_DOLLARS_PER_MILLION_TOKENS = 10;
+
+// Per-model pricing as of 2026-05. From Anthropic/OpenAI public price pages.
+// Add new models here as they launch.
+const MODEL_PRICING: Record<string, { inputPerM: number; outputPerM: number }> = {
+  // Anthropic — current
+  'anthropic/claude-opus-4-7': { inputPerM: 5, outputPerM: 25 },
+  'anthropic/claude-opus-4-6': { inputPerM: 5, outputPerM: 25 },
+  'anthropic/claude-opus-4-5': { inputPerM: 5, outputPerM: 25 },
+  'anthropic/claude-opus-4-5-20251101': { inputPerM: 5, outputPerM: 25 },
+  'anthropic/claude-sonnet-4-6': { inputPerM: 3, outputPerM: 15 },
+  'anthropic/claude-sonnet-4-5': { inputPerM: 3, outputPerM: 15 },
+  'anthropic/claude-sonnet-4-5-20250929': { inputPerM: 3, outputPerM: 15 },
+  'anthropic/claude-haiku-4-5': { inputPerM: 1, outputPerM: 5 },
+  'anthropic/claude-haiku-4-5-20251001': { inputPerM: 1, outputPerM: 5 },
+  // Anthropic — legacy
+  'anthropic/claude-opus-4-1': { inputPerM: 15, outputPerM: 75 },
+  'anthropic/claude-opus-4-1-20250805': { inputPerM: 15, outputPerM: 75 },
+  // OpenAI — approximate
+  'openai/gpt-5.5': { inputPerM: 5, outputPerM: 15 },
+  'openai/gpt-5.4': { inputPerM: 3, outputPerM: 12 },
+};
+
+const DEFAULT_PRICING = { inputPerM: 5, outputPerM: 25 }; // Opus-tier fallback for unknown models
+
+/** CUA-typical 90/10 input/output split. Browser agents send heavy
+ *  screenshot context (input) and brief action calls (output). Adjust if
+ *  the workload changes shape (e.g., long text-extraction pulls). */
+function effectiveTokenRate(modelName: string | undefined): number {
+  if (!modelName) return 10; // legacy fallback
+  const p = MODEL_PRICING[modelName] ?? DEFAULT_PRICING;
+  return p.inputPerM * 0.9 + p.outputPerM * 0.1;
+}
 
 export interface CostBreakdown {
   bbMinutes: number;
@@ -15,39 +46,50 @@ export interface CostBreakdown {
   tokens: number | null;
   llmDollars: number | null;
   totalDollars: number;
+  /** Effective $/M rate used for the calc, for callers that want to display it. */
+  effectiveRate: number;
 }
 
 export function computeCost(opts: {
   ranForMs: number;
   tokensUsed: number | undefined;
+  /** Agent model used; determines the effective $/M rate. Falls back to
+   *  the legacy $10/M constant if not provided (preserves existing behavior
+   *  for callsites that haven't been threaded through yet). */
+  agentModel?: string;
 }): CostBreakdown {
   const bbMinutes = opts.ranForMs / 60_000;
   const bbDollars = bbMinutes * BB_DOLLARS_PER_MINUTE;
   const tokens = opts.tokensUsed ?? null;
+  const effectiveRate = effectiveTokenRate(opts.agentModel);
   const llmDollars =
-    tokens != null ? (tokens / 1_000_000) * OPENAI_DOLLARS_PER_MILLION_TOKENS : null;
+    tokens != null ? (tokens / 1_000_000) * effectiveRate : null;
   const totalDollars = bbDollars + (llmDollars ?? 0);
-  return { bbMinutes, bbDollars, tokens, llmDollars, totalDollars };
+  return { bbMinutes, bbDollars, tokens, llmDollars, totalDollars, effectiveRate };
 }
 
 export function formatCostSummary(c: CostBreakdown): string {
   const parts: string[] = [];
   if (c.tokens != null && c.llmDollars != null) {
-    parts.push(`~$${c.llmDollars.toFixed(2)} OpenAI (${c.tokens.toLocaleString()} tokens)`);
+    parts.push(
+      `~$${c.llmDollars.toFixed(2)} LLM (${c.tokens.toLocaleString()} tokens @ $${c.effectiveRate.toFixed(2)}/M)`,
+    );
   } else {
-    parts.push('OpenAI cost: n/a (tokens not surfaced)');
+    parts.push('LLM cost: n/a (tokens not surfaced)');
   }
   parts.push(`${c.bbMinutes.toFixed(1)}m × $${BB_DOLLARS_PER_MINUTE}/min Browserbase`);
   parts.push(`≈ $${c.totalDollars.toFixed(2)} total`);
   return `Cost: ${parts.join(' + ').replace(' + ≈', ' ≈')}`;
 }
 
-// Per-mission LLM-cost band — wide on purpose. Real cost depends on how many
-// steps the agent takes and how big the page DOM is. The lower bound assumes
-// the agent finishes in a few steps; the upper assumes it runs near maxSteps
-// with large screenshots / DOM payloads.
-const LLM_DOLLARS_PER_MISSION_LOW = 0.30;
-const LLM_DOLLARS_PER_MISSION_HIGH = 3.00;
+// ─── Preflight estimate ─────────────────────────────────────────────────────
+//
+// Per-mission token bands by mission shape. Empirically derived from observed
+// runs — quick smoke missions ~10-30k tokens; complex multi-tool-use chains
+// or maxSteps-bound missions ~150-300k tokens.
+
+const TOKENS_PER_MISSION_LOW = 30_000;
+const TOKENS_PER_MISSION_HIGH = 300_000;
 
 export interface CostEstimate {
   bbDollarsMax: number;
@@ -55,29 +97,35 @@ export interface CostEstimate {
   llmDollarsHigh: number;
   totalLow: number;
   totalHigh: number;
+  effectiveRate: number;
 }
 
 export function estimateCostRange(opts: {
   missionCount: number;
   wallClockMs: number;
+  agentModel?: string;
 }): CostEstimate {
   const minutesPerMission = opts.wallClockMs / 60_000;
   const bbDollarsMax = opts.missionCount * minutesPerMission * BB_DOLLARS_PER_MINUTE;
-  const llmDollarsLow = opts.missionCount * LLM_DOLLARS_PER_MISSION_LOW;
-  const llmDollarsHigh = opts.missionCount * LLM_DOLLARS_PER_MISSION_HIGH;
+  const effectiveRate = effectiveTokenRate(opts.agentModel);
+  const llmDollarsLow =
+    opts.missionCount * (TOKENS_PER_MISSION_LOW / 1_000_000) * effectiveRate;
+  const llmDollarsHigh =
+    opts.missionCount * (TOKENS_PER_MISSION_HIGH / 1_000_000) * effectiveRate;
   return {
     bbDollarsMax,
     llmDollarsLow,
     llmDollarsHigh,
-    totalLow: llmDollarsLow,           // BB is pay-per-actual-minute; floor is just LLM
+    totalLow: llmDollarsLow, // BB is pay-per-actual-minute; floor is just LLM
     totalHigh: bbDollarsMax + llmDollarsHigh,
+    effectiveRate,
   };
 }
 
 export function formatCostEstimate(e: CostEstimate, missionCount: number): string {
   return (
     `Estimated cost: $${e.totalLow.toFixed(2)}–$${e.totalHigh.toFixed(2)} ` +
-    `(up to $${e.bbDollarsMax.toFixed(2)} Browserbase + $${e.llmDollarsLow.toFixed(2)}–$${e.llmDollarsHigh.toFixed(2)} LLM, ` +
+    `(up to $${e.bbDollarsMax.toFixed(2)} Browserbase + $${e.llmDollarsLow.toFixed(2)}–$${e.llmDollarsHigh.toFixed(2)} LLM at $${e.effectiveRate.toFixed(2)}/M, ` +
     `${missionCount} mission${missionCount === 1 ? '' : 's'}).`
   );
 }

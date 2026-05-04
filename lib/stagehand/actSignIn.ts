@@ -24,9 +24,14 @@ export async function aiSignIn(opts: {
     `Find the email or username input field and type "${opts.email}" into it.`,
   );
 
-  // Step 2: click continue / submit (or skip if password already visible)
+  // Step 2: click continue / submit (or skip if password already visible).
+  // Clerk forms typically render multiple "Continue" buttons (the form's
+  // own Continue, "Continue with SSO", "Continue with Google"); be explicit
+  // about which one to click and which to avoid.
   await opts.stagehand.act(
-    `Click the button to continue or submit (commonly labeled "Continue", "Next", or "Sign in"). If a password field is already visible on this same page, skip this step.`,
+    `Click the button that submits the email/username form — typically labeled exactly "Continue" or "Next" and immediately below the email input. ` +
+      `Do NOT click any button that mentions Google, SSO, GitHub, Microsoft, sign-up, or any third-party identity provider. ` +
+      `If a password input field is already visible on this same page (no continue step needed), skip this step entirely.`,
   );
 
   // Step 3: fill password

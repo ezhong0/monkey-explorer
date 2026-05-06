@@ -1,35 +1,37 @@
-// Execute a single mission end-to-end:
-//   1. Create report at start (status: running)
-//   2. Create BB session + fetch live view URL
-//   3. Print [N/M] header with live view + replay URLs
-//   4. Connect Stagehand
-//   5. Probe — if sign-in-page, run auth dispatch + retry probe (1x)
-//   6. Execute agent (Stagehand hybrid mode: act/goto/extract + pixel fallbacks)
-//   7. Fetch session events (console + network) post-mission
-//   8. Lift deterministic Issues (console errors + 4xx/5xx)
-//   9. Build in-memory trace; run adjudicator → Review
-//   10. Update report; close session
+// Execute a single mission end-to-end.
 //
-// Each step's failure mode is mapped onto the RunStatus discriminated
-// union. Every non-running RunStatus carries a Review (real one from the
+// Phases (each delegated to a pipeline stage where possible):
+//   1. Create BB session + initial running-status report
+//   2. Connect Stagehand
+//   3. Probe — pipeline/probe.ts
+//   4. Run agent — pipeline/run-agent.ts (under wallclock timer)
+//   5. Fetch session events — pipeline/fetch-events.ts (best-effort)
+//   6. Lift deterministic Issues — pipeline/lift-issues.ts
+//   7. Build trace + adjudicate (gated on trace content) —
+//      pipeline/build-trace.ts + pipeline/adjudicate.ts
+//   8. Assemble RunStatus from stage results
+//   9. Finalize: write terminal report, close session
+//
+// Every non-running RunStatus carries a Review (real one from the
 // adjudicator on `completed`; synthetic on failure paths) so JSON
 // consumers don't have to branch on its presence.
 
 import { randomUUID } from 'node:crypto';
 import * as log from '../log/stderr.js';
 import { computeCost, formatCostSummary } from '../cost/compute.js';
-import { probe } from '../probe/probe.js';
 import { sanitizeText } from '../review/sanitize.js';
 import { writeReportInitial, writeReportTerminal } from '../report/write.js';
 import { startWallClockTimer } from './caps.js';
 import { createSession, type MonkeySession } from '../bb/session.js';
 import { createStagehand } from '../stagehand/adapter.js';
-import { executeAgent } from '../stagehand/agent.js';
 import { liftDeterministicIssues } from '../pipeline/lift-issues.js';
 import { pickModelApiKey } from '../stagehand/modelKey.js';
 import { buildTrace } from '../pipeline/build-trace.js';
-import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
 import { fetchSessionEvents } from '../pipeline/fetch-events.js';
+import { runProbe } from '../pipeline/probe.js';
+import { runAgent, type RunAgentValue } from '../pipeline/run-agent.js';
+import { adjudicate } from '../pipeline/adjudicate.js';
+import type { StageResult } from '../pipeline/types.js';
 import {
   reviewForAborted,
   reviewForAdjudicatorFailed,
@@ -39,11 +41,11 @@ import {
   reviewForNotStarted,
   reviewForTimedOut,
 } from '../review/synthetic.js';
-import type { Review } from '../review/schema.js';
+import type { Issue, Review } from '../review/schema.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
-  AdjudicatorErrorKind,
   ConsoleEvent,
+  FailureCause,
   MissionResult,
   NetworkFailure,
   RunStatus,
@@ -79,15 +81,16 @@ function logPrefix(index: number, total: number): string {
   return total > 1 ? `[${index + 1}/${total}]` : '';
 }
 
+function elapsed(startedAt: Date): number {
+  return Date.now() - startedAt.getTime();
+}
+
 export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
   const startedAt = new Date();
   const prefix = logPrefix(opts.index, opts.total);
-  let session: MonkeySession | null = null;
-  let stagehandHandle: Awaited<ReturnType<typeof createStagehand>> | null = null;
-  let reportPath = '';
-  let initialFm: Awaited<ReturnType<typeof writeReportInitial>>['frontMatter'] | null = null;
 
-  // Create session FIRST so we have session_id for the report.
+  // ─── 1. Session + initial report ────────────────────────────────────────
+  let session: MonkeySession;
   try {
     session = await createSession({
       bb: opts.bb,
@@ -101,7 +104,8 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     return await writeNotStartedReport(opts, startedAt, err as Error);
   }
 
-  // Initial report (status: running)
+  let reportPath: string;
+  let initialFm: Awaited<ReturnType<typeof writeReportInitial>>['frontMatter'];
   try {
     const initial = await writeReportInitial({
       reportsDir: opts.reportsDir,
@@ -119,14 +123,31 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     throw err; // can't write reports — fatal
   }
 
-  // Print header with live view + replay URLs.
   log.info(`${prefix} ${opts.mission}`);
-  if (session.liveViewUrl) {
-    log.info(`${prefix}   Live view: ${session.liveViewUrl}`);
-  }
+  if (session.liveViewUrl) log.info(`${prefix}   Live view: ${session.liveViewUrl}`);
   log.info(`${prefix}   Replay:    ${session.replayUrl}  (available after run)`);
 
-  // Connect Stagehand.
+  // From here on, all failures flow through finalize() — a closure that
+  // captures the session/handle/report so each phase can fail with a
+  // single-line return.
+  let stagehandHandle: Awaited<ReturnType<typeof createStagehand>> | null = null;
+  const finalizeWith = (
+    status: RunStatus,
+    consoleErrors: ConsoleEvent[] = [],
+    networkFailures: NetworkFailure[] = [],
+  ): Promise<MissionResult> =>
+    finalize(opts, {
+      session,
+      stagehandHandle,
+      reportPath,
+      initialFm,
+      startedAt,
+      status,
+      consoleErrors,
+      networkFailures,
+    });
+
+  // ─── 2. Connect Stagehand ───────────────────────────────────────────────
   try {
     stagehandHandle = await createStagehand({
       apiKey: opts.credentials.browserbaseApiKey,
@@ -137,125 +158,50 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       logPrefix: prefix,
     });
   } catch (err) {
-    const errMsg = sanitizeText((err as Error).message);
-    return await finalize(opts, {
-      session,
-      stagehandHandle: null,
-      reportPath,
-      initialFm: initialFm!,
-      startedAt,
-      status: {
-        kind: 'errored',
-        review: reviewForErrored(errMsg),
-        error: errMsg,
-        ranForMs: elapsed(startedAt),
-      },
-      consoleErrors: [],
-      networkFailures: [],
-    });
+    return finalizeWith(statusFromEarlyFailure('infrastructure', (err as Error).message, elapsed(startedAt)));
   }
 
-  // Probe to confirm the session inherited valid auth from the just-bootstrapped
-  // context. Bootstrap ran moments ago in commands/run.ts so this should always
-  // pass for non-`none` auth modes; if it doesn't, something's wrong with the
-  // target's auth (cookies revoked, app outage, etc.) and we fail fast.
-  try {
-    const page = await stagehandHandle.page();
-    const probeResult = await probe({ page, stagehand: stagehandHandle.stagehand, target: opts.target.url, authModeKind: opts.authMode.kind });
-
-    if (probeResult.kind !== 'ok') {
-      const reason =
-        probeResult.kind === 'unreachable'
-          ? `unreachable: ${probeResult.details}`
-          : probeResult.kind === 'sign-in-page'
-            ? `not signed in (bootstrap just ran but cookies didn't apply). Run \`monkey auth ${opts.targetName}\` to refresh.`
-            : `unknown auth state: ${probeResult.details}`;
-      return await finalize(opts, {
-        session,
-        stagehandHandle,
-        reportPath,
-        initialFm: initialFm!,
-        startedAt,
-        status: {
-          kind: 'not_started',
-          review: reviewForNotStarted(reason),
-          reason,
-        },
-        consoleErrors: [],
-        networkFailures: [],
-      });
-    }
-
-    log.ok(`${prefix} Probe passed.`);
-  } catch (err) {
-    const errMsg = sanitizeText((err as Error).message);
-    return await finalize(opts, {
-      session,
-      stagehandHandle,
-      reportPath,
-      initialFm: initialFm!,
-      startedAt,
-      status: {
-        kind: 'errored',
-        review: reviewForErrored(errMsg),
-        error: errMsg,
-        ranForMs: elapsed(startedAt),
-      },
-      consoleErrors: [],
-      networkFailures: [],
-    });
+  // ─── 3. Probe ───────────────────────────────────────────────────────────
+  const page = await stagehandHandle.page();
+  const probeResult = await runProbe({
+    page,
+    stagehand: stagehandHandle.stagehand,
+    targetUrl: opts.target.url,
+    authModeKind: opts.authMode.kind,
+    targetName: opts.targetName,
+  });
+  if (!probeResult.ok) {
+    return finalizeWith(statusFromEarlyFailure(probeResult.cause, probeResult.error, elapsed(startedAt)));
   }
+  log.ok(`${prefix} Probe passed.`);
 
-  // Run the agent with wall-clock timer.
-  type AgentErrorKind = 'timed_out' | 'exceeded_tokens' | 'errored';
-  let tokensUsed: number | undefined;
-  let agentError: { kind: AgentErrorKind; message: string } | null = null;
-  let rawActions: unknown[] = [];
-
+  // ─── 4. Run agent under wallclock timer ─────────────────────────────────
   const timer = startWallClockTimer({
     wallClockMs: opts.caps.wallClockMs,
-    onFire: () => session!.close(),
+    onFire: () => session.close(),
     signal: opts.signal,
   });
-
+  let agentResult: StageResult<RunAgentValue>;
   try {
-    const result = await executeAgent({
+    agentResult = await runAgent({
       stagehand: stagehandHandle.stagehand,
       agentModel: opts.agentModel,
       agentApiKey: pickModelApiKey(opts.agentModel, opts.credentials),
-      // When the user has configured an Anthropic base URL override
-      // (e.g. an Azure Foundry endpoint), thread it through so the agent
-      // routes Claude calls there instead of api.anthropic.com.
       agentBaseURL: opts.agentModel.startsWith('anthropic/')
         ? opts.credentials.anthropicBaseURL
         : undefined,
-      // Route Stagehand's in-agent grounding calls (act/extract internals) to
-      // the per-target stagehandModel. Without this, grounding inherits the
-      // agent's expensive opus-tier model and saturates the same deployment
-      // — see Layer 1 in capacity-hardening notes.
       executionModel: opts.stagehandModel,
       executionApiKey: pickModelApiKey(opts.stagehandModel, opts.credentials),
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
       signal: opts.signal,
+      timerFired: () => timer.fired(),
     });
-    tokensUsed = result.tokensUsed;
-    rawActions = result.rawActions;
-    if (result.error) {
-      if (timer.fired()) {
-        agentError = { kind: 'timed_out', message: result.error.message };
-      } else if (result.error.kind === 'rate_limit') {
-        agentError = { kind: 'exceeded_tokens', message: result.error.message };
-      } else {
-        agentError = { kind: 'errored', message: result.error.message };
-      }
-    }
   } finally {
     timer.clear(); // clear before downstream LLM calls so a late-fire doesn't kill them
   }
 
-  // Fetch console + network events from Browserbase's server-side log capture.
-  // Best-effort — empty if session was released too quickly.
+  // ─── 5. Fetch session events (best-effort) ──────────────────────────────
   const targetOrigin = (() => {
     try {
       return new URL(opts.target.url).origin;
@@ -263,153 +209,194 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       return opts.target.url;
     }
   })();
-  const collectedEvents = session
-    ? await fetchSessionEvents({
-        bb: opts.bb,
-        sessionId: session.id,
-        targetOrigin,
-      })
-    : { consoleErrors: [], networkFailures: [] };
+  const collectedEvents = await fetchSessionEvents({
+    bb: opts.bb,
+    sessionId: session.id,
+    targetOrigin,
+  });
 
-  // Deterministic-issue lifter: console errors + 4xx/5xx network failures
-  // become first-class Issues with source='lifter'.
+  // ─── 6. Lift deterministic Issues ───────────────────────────────────────
   const { issues: lifterIssues } = liftDeterministicIssues(collectedEvents);
 
-  // Adjudicator pass: reads trace + lifted issues, emits a Review.
-  // Runs whenever there's trace content to adjudicate, even on timed_out /
-  // exceeded_tokens / errored runs — the partial trace is still useful and
-  // the adjudicator can verdict 'partial' or 'unclear' accordingly. Skipped
-  // only when the agent produced zero actions or the run was SIGINT'd.
+  // ─── Aborted check (after agent + events so we have lifter signal) ──────
+  if (opts.signal.aborted) {
+    return finalizeWith(
+      { kind: 'aborted', review: reviewForAborted(), ranForMs: elapsed(startedAt) },
+      collectedEvents.consoleErrors,
+      collectedEvents.networkFailures,
+    );
+  }
+
+  // ─── 7. Build trace + adjudicate (gated on rawActions content) ──────────
+  const rawActions = agentResult.ok ? agentResult.value.rawActions : [];
+  const tokensUsed = agentResult.ok ? agentResult.value.tokensUsed : undefined;
+
   let review: Review | null = null;
-  let adjudicatorError: string | null = null;
-  let adjudicatorErrorKind: AdjudicatorErrorKind | null = null;
-  const haveTraceContent = rawActions.length > 0;
-  if (haveTraceContent && !opts.signal.aborted) {
-    try {
-      const trace = buildTrace({
-        header: {
-          missionId: opts.invocationId,
-          mission: opts.mission,
-          target: opts.target.url,
-          startedAt: startedAt.toISOString(),
-          agentModel: opts.agentModel,
-        },
-        rawActions,
-        consoleErrors: collectedEvents.consoleErrors,
-        networkFailures: collectedEvents.networkFailures,
-      });
+  let adjFailure: { cause: FailureCause; error?: string } | null = null;
+  if (rawActions.length > 0) {
+    const trace = buildTrace({
+      header: {
+        missionId: opts.invocationId,
+        mission: opts.mission,
+        target: opts.target.url,
+        startedAt: startedAt.toISOString(),
+        agentModel: opts.agentModel,
+      },
+      rawActions,
+      consoleErrors: collectedEvents.consoleErrors,
+      networkFailures: collectedEvents.networkFailures,
+    });
 
-      const adjModel = opts.adjudicatorModel ?? opts.agentModel;
-      const useAzureForAdj = adjModel.startsWith('anthropic/') && !!opts.credentials.anthropicBaseURL;
-      const adjModelName = useAzureForAdj ? adjModel.replace(/^anthropic\//, '') : adjModel;
+    const adjModel = opts.adjudicatorModel ?? opts.agentModel;
+    const useAzureForAdj =
+      adjModel.startsWith('anthropic/') && !!opts.credentials.anthropicBaseURL;
+    const adjModelName = useAzureForAdj ? adjModel.replace(/^anthropic\//, '') : adjModel;
 
-      review = await runAdjudicator({
-        apiKey: pickModelApiKey(adjModel, opts.credentials),
-        baseURL: useAzureForAdj ? opts.credentials.anthropicBaseURL : undefined,
-        model: adjModelName,
-        trace,
-        liftedIssues: lifterIssues,
-      });
-    } catch (err) {
-      // The adjudicator should always throw AdjudicatorError, but defend
-      // against bugs (or buildTrace failures) that leak a different shape.
-      if (err instanceof AdjudicatorError) {
-        adjudicatorError = sanitizeText(err.message);
-        adjudicatorErrorKind = err.kind;
-      } else {
-        const e = err as { name?: string; message?: string; stack?: string };
-        const msg = e?.message ?? String(err);
-        adjudicatorError = sanitizeText(`unexpected ${e?.name ?? 'error'}: ${msg}`);
-        adjudicatorErrorKind = 'other';
-        // Surface the unexpected error type so debugging is possible.
-        log.warn(`${prefix} adjudicator threw non-AdjudicatorError (${e?.name ?? 'unknown'}): ${msg}`);
-        if (process.env.MONKEY_DEBUG && e?.stack) {
-          log.warn(e.stack);
-        }
-      }
+    const adjResult = await adjudicate({
+      apiKey: pickModelApiKey(adjModel, opts.credentials),
+      baseURL: useAzureForAdj ? opts.credentials.anthropicBaseURL : undefined,
+      model: adjModelName,
+      trace,
+      liftedIssues: lifterIssues,
+    });
+
+    if (adjResult.ok) {
+      review = adjResult.value;
+    } else {
+      adjFailure = { cause: adjResult.cause, error: adjResult.error };
       log.warn(
-        `${prefix} adjudicator failed (${adjudicatorErrorKind}); shipping ${lifterIssues.length} lifter issue(s) only.`,
+        `${prefix} adjudicator failed (${adjResult.cause}); shipping ${lifterIssues.length} lifter issue(s) only.`,
       );
+      if (process.env.MONKEY_DEBUG && adjResult.error) log.warn(adjResult.error);
     }
   }
 
-  // Build terminal status. The adjudicator may have produced a real Review
-  // even on partial-failure paths (timed_out / exceeded_tokens / errored),
-  // since we now run the adjudicator whenever there's trace content. Prefer
-  // that real Review; fall back to a synthetic only when adjudication didn't
-  // run or itself failed.
-  const ranForMs = elapsed(startedAt);
-  let status: RunStatus;
-  if (opts.signal.aborted) {
-    status = { kind: 'aborted', review: reviewForAborted(), ranForMs };
-  } else if (agentError?.kind === 'timed_out' || timer.fired()) {
-    status = {
-      kind: 'timed_out',
-      review: review ?? reviewForTimedOut(lifterIssues),
-      ranForMs,
-    };
-  } else if (agentError?.kind === 'exceeded_tokens') {
-    // Today: 'exceeded_tokens' fires only on agent-side rate-limit/overload
-    // (classifyError maps API 429/529 + Stagehand "Failed after N attempts"
-    // to kind='rate_limit' which we wire here). Use the rate-limited
-    // synthetic Review so the diagnostic surfaces 'rate_limited' (retry me)
-    // not 'token_exceeded' (raise the budget). When real token-budget
-    // enforcement lands, swap in reviewForExceededTokens for that path.
-    status = {
-      kind: 'exceeded_tokens',
-      review: review ?? reviewForAgentRateLimited(lifterIssues),
-      ranForMs,
-    };
-  } else if (agentError) {
-    const errMsg = sanitizeText(agentError.message);
-    status = {
-      kind: 'errored',
-      review: review ?? reviewForErrored(errMsg),
-      error: errMsg,
-      ranForMs,
-    };
-  } else if (adjudicatorError) {
-    const kind = adjudicatorErrorKind ?? 'other';
-    const synth =
-      kind === 'rate_limit'
-        ? reviewForAdjudicatorRateLimited(lifterIssues)
-        : reviewForAdjudicatorFailed(lifterIssues, adjudicatorError, kind);
-    status = {
-      kind: 'adjudicator_failed',
-      review: synth,
-      error: adjudicatorError,
-      errorKind: kind,
-      ranForMs,
-    };
-  } else if (review) {
-    status = { kind: 'completed', review, ranForMs, tokensUsed };
-  } else {
-    // Agent returned without errors but produced no actions — there's no
-    // review to be had. Treat as a run-time error.
-    const errMsg = 'Agent produced no actions';
-    status = {
-      kind: 'errored',
-      review: reviewForErrored(errMsg),
-      error: errMsg,
-      ranForMs,
-    };
+  // ─── 8. Assemble RunStatus ──────────────────────────────────────────────
+  const status = assembleStatus({
+    agentResult,
+    adjFailure,
+    review,
+    lifterIssues,
+    ranForMs: elapsed(startedAt),
+    tokensUsed,
+  });
+
+  // ─── 9. Finalize ────────────────────────────────────────────────────────
+  return finalizeWith(status, collectedEvents.consoleErrors, collectedEvents.networkFailures);
+}
+
+// ─── Status assembly ──────────────────────────────────────────────────────
+
+function statusFromEarlyFailure(
+  cause: FailureCause,
+  error: string | undefined,
+  ranForMs: number,
+): RunStatus {
+  const errMsg = sanitizeText(error ?? 'failed');
+  switch (cause) {
+    case 'probe_failed':
+      return { kind: 'not_started', review: reviewForNotStarted(errMsg), reason: errMsg };
+    case 'aborted':
+      return { kind: 'aborted', review: reviewForAborted(), ranForMs };
+    case 'infrastructure':
+    case 'agent_errored':
+    default:
+      return { kind: 'errored', review: reviewForErrored(errMsg), error: errMsg, ranForMs };
+  }
+}
+
+function assembleStatus(args: {
+  agentResult: StageResult<RunAgentValue>;
+  adjFailure: { cause: FailureCause; error?: string } | null;
+  review: Review | null;
+  lifterIssues: Issue[];
+  ranForMs: number;
+  tokensUsed: number | undefined;
+}): RunStatus {
+  const { agentResult, adjFailure, review, lifterIssues, ranForMs, tokensUsed } = args;
+
+  // Agent failed — the failure cause drives status (review may still come
+  // from the adjudicator if it ran on partial trace; prefer real over synth).
+  if (!agentResult.ok) {
+    const errMsg = sanitizeText(agentResult.error ?? 'agent failed');
+    switch (agentResult.cause) {
+      case 'wallclock':
+        return {
+          kind: 'timed_out',
+          review: review ?? reviewForTimedOut(lifterIssues),
+          ranForMs,
+        };
+      case 'rate_limited':
+        // Today: API rate-limit / Anthropic 429/529. The 'exceeded_tokens'
+        // status name is legacy — when real budget enforcement lands this
+        // branch will split. The diagnostic on the synthetic Review is
+        // 'rate_limited' (retry me), which is the operationally honest
+        // signal.
+        return {
+          kind: 'exceeded_tokens',
+          review: review ?? reviewForAgentRateLimited(lifterIssues),
+          ranForMs,
+        };
+      case 'agent_errored':
+      default:
+        return {
+          kind: 'errored',
+          review: review ?? reviewForErrored(errMsg),
+          error: errMsg,
+          ranForMs,
+        };
+    }
   }
 
-  return await finalize(opts, {
-    session,
-    stagehandHandle,
-    reportPath,
-    initialFm: initialFm!,
-    startedAt,
-    status,
-    consoleErrors: collectedEvents.consoleErrors,
-    networkFailures: collectedEvents.networkFailures,
-  });
+  // Agent succeeded; adjudicator may have failed.
+  if (adjFailure) {
+    const errMsg = sanitizeText(adjFailure.error ?? 'adjudicator failed');
+    switch (adjFailure.cause) {
+      case 'rate_limited':
+        return {
+          kind: 'adjudicator_failed',
+          review: reviewForAdjudicatorRateLimited(lifterIssues),
+          error: errMsg,
+          errorKind: 'rate_limit',
+          ranForMs,
+        };
+      case 'adjudicator_parse':
+        return {
+          kind: 'adjudicator_failed',
+          review: reviewForAdjudicatorFailed(lifterIssues, errMsg, 'parse'),
+          error: errMsg,
+          errorKind: 'parse',
+          ranForMs,
+        };
+      case 'adjudicator_other':
+      default:
+        return {
+          kind: 'adjudicator_failed',
+          review: reviewForAdjudicatorFailed(lifterIssues, errMsg, 'other'),
+          error: errMsg,
+          errorKind: 'other',
+          ranForMs,
+        };
+    }
+  }
+
+  // Agent + adjudicator both succeeded.
+  if (review) {
+    return { kind: 'completed', review, ranForMs, tokensUsed };
+  }
+
+  // Agent ran cleanly but produced no actions — adjudicator never ran.
+  // Treat as a run-time error (the agent did literally nothing).
+  const errMsg = 'Agent produced no actions';
+  return {
+    kind: 'errored',
+    review: reviewForErrored(errMsg),
+    error: errMsg,
+    ranForMs,
+  };
 }
 
-function elapsed(startedAt: Date): number {
-  return Date.now() - startedAt.getTime();
-}
+// ─── Finalize ─────────────────────────────────────────────────────────────
 
 async function finalize(
   opts: RunMissionOpts,
@@ -427,10 +414,8 @@ async function finalize(
   const finishedAt = new Date();
   const sessionId = ctx.session?.id ?? '';
   const replayUrl = ctx.session?.replayUrl ?? '';
-  const consoleErrors = ctx.consoleErrors;
-  const networkFailures = ctx.networkFailures;
 
-  // Write terminal report
+  // Cost summary only on completed runs (where tokensUsed is meaningful).
   let costSummary: string | undefined;
   if (ctx.status.kind === 'completed') {
     const cost = computeCost({
@@ -447,8 +432,8 @@ async function finalize(
         filePath: ctx.reportPath,
         initialFm: ctx.initialFm,
         status: ctx.status,
-        consoleErrors,
-        networkFailures,
+        consoleErrors: ctx.consoleErrors,
+        networkFailures: ctx.networkFailures,
         finishedAt,
         costSummary,
         sessionId,
@@ -460,12 +445,8 @@ async function finalize(
   }
 
   // Close Stagehand + session (idempotent).
-  if (ctx.stagehandHandle) {
-    await ctx.stagehandHandle.close();
-  }
-  if (ctx.session) {
-    await ctx.session.close();
-  }
+  if (ctx.stagehandHandle) await ctx.stagehandHandle.close();
+  if (ctx.session) await ctx.session.close();
 
   return {
     index: opts.index,
@@ -478,8 +459,8 @@ async function finalize(
     startedAt: ctx.startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     reportPath: ctx.reportPath,
-    consoleErrors,
-    networkFailures,
+    consoleErrors: ctx.consoleErrors,
+    networkFailures: ctx.networkFailures,
   };
 }
 
@@ -491,7 +472,6 @@ async function writeNotStartedReport(
   const finishedAt = new Date();
   const reason = sanitizeText(`session create failed: ${err.message}`);
 
-  // We can still write a report — initial + terminal in one go since there's no session_id.
   const tempSessionId = randomUUID();
   const initial = await writeReportInitial({
     reportsDir: opts.reportsDir,

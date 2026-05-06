@@ -11,7 +11,7 @@
 // for the agentic-loop use case the consumer (Claude / a script) reads the
 // final JSON anyway.
 
-import { sanitizeText } from '../findings/sanitize.js';
+import { sanitizeText } from '../review/sanitize.js';
 import * as logStderr from '../log/stderr.js';
 import type { Browserbase } from '../bb/client.js';
 import type { ConsoleEvent, NetworkFailure } from '../types.js';

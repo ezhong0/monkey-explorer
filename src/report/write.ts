@@ -12,7 +12,7 @@ import { mkdir, rename, writeFile, readdir, stat, unlink, readFile } from 'node:
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPORT_SCHEMA_VERSION as CURRENT_SCHEMA_VERSION } from './schema.js';
-import { sanitizeText, sanitizeReview } from '../findings/sanitize.js';
+import { sanitizeText, sanitizeReview } from '../review/sanitize.js';
 import { renderRunningReport, renderTerminalReport } from './render.js';
 import { reportFilename, reportPath, tmpPath } from './paths.js';
 import { ReportFrontMatterSchema, type ReportFrontMatter } from './schema.js';

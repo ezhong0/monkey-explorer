@@ -1,5 +1,5 @@
 // Renders a report's markdown body from its front matter + Review.
-// Review comes pre-sanitized via lib/findings/sanitize.
+// Review comes pre-sanitized via review/sanitize.
 
 import type { ConsoleEvent, NetworkFailure, RunStatus } from '../types.js';
 import { sortIssues, type Verdict } from '../review/schema.js';

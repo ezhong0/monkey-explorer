@@ -19,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import * as log from '../log/stderr.js';
 import { computeCost, formatCostSummary } from '../cost/compute.js';
 import { probe } from '../probe/probe.js';
-import { sanitizeText } from '../findings/sanitize.js';
+import { sanitizeText } from '../review/sanitize.js';
 import { writeReportInitial, writeReportTerminal } from '../report/write.js';
 import { startWallClockTimer } from './caps.js';
 import { createSession, type MonkeySession } from '../bb/session.js';

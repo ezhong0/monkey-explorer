@@ -26,24 +26,15 @@ export function reviewForTimedOut(lifterIssues: Issue[]): Review {
   });
 }
 
-export function reviewForExceededTokens(lifterIssues: Issue[]): Review {
-  return ReviewSchema.parse({
-    verdict: 'unclear',
-    diagnostic: 'token_exceeded',
-    summary: 'Mission exceeded the token budget before completing.',
-    issues: lifterIssues,
-    suggestions: [
-      'Increase tokenBudget cap',
-      'Switch agent model to a cheaper option',
-    ],
-  });
-}
-
 // Used when the agent hits Anthropic 429/529 (rate-limited or "Overloaded")
-// or Stagehand's "Failed after N attempts" wrapper. Distinct from
-// reviewForExceededTokens (real budget breach, never fires today since
-// budget enforcement isn't wired). The diagnostic 'rate_limited' tells the
-// caller to retry, vs 'token_exceeded' which says "raise the cap."
+// or Stagehand's "Failed after N attempts" wrapper. The diagnostic
+// 'rate_limited' tells the caller to retry.
+//
+// (A `reviewForExceededTokens` helper with diagnostic 'token_exceeded'
+// previously lived here for a future tokenBudget enforcement feature, but
+// budget enforcement isn't wired today and the helper had no callers. It
+// was dropped in Phase 4.10 of the migration. When real budget enforcement
+// lands, re-add it then.)
 export function reviewForAgentRateLimited(lifterIssues: Issue[]): Review {
   return ReviewSchema.parse({
     verdict: 'unclear',

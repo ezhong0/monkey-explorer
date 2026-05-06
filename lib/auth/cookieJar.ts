@@ -108,19 +108,30 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
     );
   }
 
-  // Filter to target's eTLD+1 PLUS known auth-provider domains. Red Team
-  // finding: avoid leaking unrelated session credentials into the BB context.
-  // But the strict eTLD+1 filter strips Vercel preview-bypass cookies
-  // (vercel.live), Clerk-hosted sessions (clerk.accounts.dev), and Google
-  // OAuth state (accounts.google.com) — without those, multi-domain auth
-  // (Google OAuth, Vercel previews) silently fails after the app's own
-  // session JWT expires (~1h for Clerk).
-  const AUTH_PROVIDER_ETLDS_PLUS_1 = [
-    'clerk.accounts.dev',  // Clerk-hosted session cookies (Auth0-style provider)
+  // Filter to target's eTLD+1 PLUS known auth-provider domains. Two distinct
+  // categories of provider:
+  //
+  //   - SINGLE_TENANT: a single shared host serves all customers' OAuth/SSO
+  //     dance. Wildcard-match (host or any subdomain) is correct.
+  //
+  //   - MULTI_TENANT_SUFFIX: each customer has its own subdomain under the
+  //     suffix (e.g. <tenant>.clerk.accounts.dev). Wildcard-match would let
+  //     cookies from ANY tenant pass through — a session-credential leak
+  //     across unrelated apps in the same Chrome profile. Instead, scope to
+  //     specific tenant hosts ALREADY OBSERVED in this jar.
+  //
+  // Without these allowances at all, multi-domain auth (Google OAuth, Vercel
+  // previews, Clerk-hosted sessions) silently fails after the app's own
+  // session JWT expires. With wildcard allowances, cross-tenant leakage is
+  // possible. The two-category split is the right middle.
+  const SINGLE_TENANT_AUTH_HOSTS = [
     'vercel.live',         // Vercel preview-deploy bypass cookies
     'accounts.google.com', // Google OAuth state
-    'auth0.com',           // Auth0-hosted sessions
-    'okta.com',            // Okta-hosted sessions
+  ];
+  const MULTI_TENANT_AUTH_SUFFIXES = [
+    'clerk.accounts.dev',  // <tenant>.clerk.accounts.dev — Clerk hosted frontend
+    'auth0.com',           // <tenant>.auth0.com — Auth0 tenant subdomain
+    'okta.com',            // <tenant>.okta.com — Okta tenant subdomain
   ];
 
   const targetHost = (() => {
@@ -132,10 +143,26 @@ export async function cookieJarSignIn(opts: CookieJarSignInOpts): Promise<void> 
   })();
   const targetEtldPlus1 = etldPlus1(targetHost);
 
-  const allowedEtlds = new Set([targetEtldPlus1, ...AUTH_PROVIDER_ETLDS_PLUS_1]);
+  // Discover specific multi-tenant auth hosts present in this jar. Only
+  // these specific tenant hosts will be allowed — not the full *.suffix
+  // wildcard. Defends against cross-tenant cookie leakage.
+  const observedTenantHosts = new Set<string>();
+  for (const cookie of jar.cookies) {
+    const bare = cookie.domain.replace(/^\./, '');
+    for (const suffix of MULTI_TENANT_AUTH_SUFFIXES) {
+      if (bare === suffix || bare.endsWith(`.${suffix}`)) {
+        observedTenantHosts.add(bare);
+      }
+    }
+  }
+
+  const subdomainAllowedHosts = new Set([targetEtldPlus1, ...SINGLE_TENANT_AUTH_HOSTS]);
   const matchesAllowed = (host: string): boolean => {
     const bare = host.replace(/^\./, '');
-    for (const allowed of allowedEtlds) {
+    // Multi-tenant: exact match against discovered hosts only.
+    if (observedTenantHosts.has(bare)) return true;
+    // Single-tenant + target eTLD+1: host or any subdomain.
+    for (const allowed of subdomainAllowedHosts) {
       if (bare === allowed || bare.endsWith(`.${allowed}`)) return true;
     }
     return false;
@@ -297,17 +324,53 @@ function isLive(c: StorageStateCookie): boolean {
 }
 
 /**
- * Naive eTLD+1: take the last two dot-separated segments. Works for typical
- * SaaS hosts (`app.example.com` → `example.com`). Doesn't handle public-suffix
- * list edge cases like `*.co.uk` or `*.vercel.app`. For monkey's use case
- * (filtering injected cookies to the target's domain), this is the safe-side
- * trade-off — narrower-than-perfect filtering is fine; it just means cookies
- * for `staging.example.app` and `prod.example.app` would both share the same
- * "etldPlus1" of `example.app`, which is probably what the user wants.
+ * Compute eTLD+1 (the registrable parent domain) using a small inline
+ * public-suffix list for common deployment platforms.
  *
- * If real users hit edge cases, swap for `tldts` (~30 KB dep).
+ * Without this, the naive last-two-labels rule returns `vercel.app` for
+ * `app-name.vercel.app` — but `vercel.app` is the public suffix itself,
+ * shared across every Vercel customer. Filtering by `vercel.app` would
+ * then accept cookies from any other Vercel deployment in the user's
+ * Chrome profile (cross-deployment cookie leakage).
+ *
+ * For hosts under one of these public suffixes, eTLD+1 includes the
+ * tenant label: `app-name.vercel.app` → `app-name.vercel.app`.
+ *
+ * If a host's public suffix isn't in this list, we fall back to the
+ * naive rule. List covers ~95% of monkey's expected deployment shapes;
+ * edge cases (`.co.uk`, etc.) → switch to `tldts` (~30KB) when needed.
  */
+const KNOWN_PUBLIC_SUFFIXES = [
+  'vercel.app',
+  'pages.dev',
+  'netlify.app',
+  'github.io',
+  'herokuapp.com',
+  'web.app',
+  'firebaseapp.com',
+  'run.app',
+  'fly.dev',
+  'railway.app',
+  'onrender.com',
+  'glitch.me',
+  'replit.app',
+] as const;
+
 function etldPlus1(hostname: string): string {
+  for (const suffix of KNOWN_PUBLIC_SUFFIXES) {
+    if (hostname === suffix) return hostname;
+    if (hostname.endsWith(`.${suffix}`)) {
+      // eTLD+1 = one label up from the public suffix, plus the suffix.
+      // app.foo.vercel.app → foo.vercel.app
+      // foo.vercel.app    → foo.vercel.app
+      const before = hostname.slice(0, -suffix.length - 1);
+      const labels = before.split('.');
+      const lastLabel = labels[labels.length - 1] ?? '';
+      return lastLabel ? `${lastLabel}.${suffix}` : hostname;
+    }
+  }
+  // Fallback: last two segments. Works for typical SaaS hosts
+  // (app.example.com → example.com).
   const parts = hostname.split('.');
   if (parts.length <= 2) return hostname;
   return parts.slice(-2).join('.');

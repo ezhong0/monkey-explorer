@@ -115,8 +115,11 @@ function isPrivateIPv6(ip: string): boolean {
   if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true;
   // fc00::/7 — unique local addresses
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-  // ::ffff:<v4> — IPv4-mapped IPv6; check the v4 part
-  const v4Mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4Mapped) return isPrivateIPv4(v4Mapped[1]);
+  // IPv4-in-IPv6 forms: ::ffff:a.b.c.d (mapped, modern) and ::a.b.c.d
+  // (compatible, deprecated). Both must be checked — the deprecated form
+  // is a known SSRF bypass (e.g. http://[::169.254.169.254]/ reaches AWS
+  // metadata if only the mapped form is checked).
+  const v4InV6 = lower.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4InV6) return isPrivateIPv4(v4InV6[1]);
   return false;
 }

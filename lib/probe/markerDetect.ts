@@ -35,8 +35,12 @@ const URL_TRANSITION_TIMEOUT_MS = 10_000;
 // 1s more latency on negative outcomes only.
 const RETRY_ON_NEGATIVE_DELAY_MS = 2500;
 
+// Tri-state so the model can decline to commit on ambiguous pages
+// (loading state, captcha, partial-render). Forcing a boolean made the
+// model guess wrong on those — the 'unclear' branch surfaces as the
+// caller's 'unknown' result, which fail-safes to "treat as needing auth."
 const SignedInSchema = z.object({
-  signedIn: z.boolean(),
+  signedIn: z.enum(['yes', 'no', 'unclear']),
   reasoning: z.string().optional(),
 });
 
@@ -104,10 +108,14 @@ async function checkSignedInOnce(opts: {
 async function aiCheckSignedIn(stagehand: Stagehand): Promise<boolean | 'unknown'> {
   try {
     const result = await stagehand.extract(
-      'Look at this page and determine if a user is currently signed in to the application. Indicators of signed-in: a user menu, account avatar, "Sign out" button, dashboard content. Indicators of not-signed-in: sign-in/login form, "Sign up" or "Sign in" buttons in navigation, marketing landing page.',
+      'Look at this page and determine if a user is currently signed in to the application. ' +
+        'Return "yes" if you see clear signs (user menu, account avatar, "Sign out" button, dashboard content). ' +
+        'Return "no" if you see clear signs (sign-in/login form, "Sign up" or "Sign in" buttons in nav, marketing landing page). ' +
+        'Return "unclear" if the page is mid-load, blocked by a captcha, partially rendered, or otherwise ambiguous.',
       SignedInSchema,
     );
-    return result.signedIn;
+    if (result.signedIn === 'unclear') return 'unknown';
+    return result.signedIn === 'yes';
   } catch {
     return 'unknown';
   }

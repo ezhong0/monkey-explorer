@@ -13,7 +13,6 @@
 //   - Rate limit / 429 → no retry (don't burn quota); throws AdjudicatorError
 //   - Other errors → throw, runMission marks status=adjudicator_failed
 
-import Anthropic from '@anthropic-ai/sdk';
 import { toJsonSchema } from '@browserbasehq/stagehand';
 import { z } from 'zod';
 import {
@@ -23,6 +22,12 @@ import {
 } from '../review/schema.js';
 import type { Trace } from '../trace/schema.js';
 import { validateReview } from './validate.js';
+import {
+  createAnthropicClient,
+  type AnthropicClient,
+  type AnthropicMessage,
+  type AnthropicToolInputSchema,
+} from './anthropic-client.js';
 
 export class AdjudicatorError extends Error {
   constructor(message: string, public readonly kind: 'rate_limit' | 'parse' | 'other') {
@@ -163,7 +168,7 @@ interface AdjudicatorOptions {
   liftedIssues: Issue[];
 }
 
-function unwrapToolUseReview(message: Anthropic.Message): unknown {
+function unwrapToolUseReview(message: AnthropicMessage): unknown {
   for (const block of message.content) {
     if (block.type === 'tool_use' && block.name === ADJUDICATOR_TOOL_NAME) {
       return block.input;
@@ -176,7 +181,7 @@ function unwrapToolUseReview(message: Anthropic.Message): unknown {
 }
 
 async function callAdjudicator(
-  client: Anthropic,
+  client: AnthropicClient,
   model: string,
   systemPrompt: string,
   userPrompt: string,
@@ -200,7 +205,7 @@ async function callAdjudicator(
       {
         name: ADJUDICATOR_TOOL_NAME,
         description: 'Submit the final functional review.',
-        input_schema: ADJUDICATOR_TOOL_INPUT_SCHEMA as Anthropic.Tool.InputSchema,
+        input_schema: ADJUDICATOR_TOOL_INPUT_SCHEMA as AnthropicToolInputSchema,
       },
     ],
     tool_choice: { type: 'tool', name: ADJUDICATOR_TOOL_NAME },
@@ -257,9 +262,9 @@ export async function runAdjudicator(opts: AdjudicatorOptions): Promise<Review> 
 }
 
 async function runAdjudicatorInner(opts: AdjudicatorOptions): Promise<Review> {
-  const client = new Anthropic({
+  const client = createAnthropicClient({
     apiKey: opts.apiKey,
-    ...(opts.baseURL ? { baseURL: opts.baseURL } : {}),
+    baseURL: opts.baseURL,
   });
 
   const systemPrompt = SYSTEM_PROMPT;

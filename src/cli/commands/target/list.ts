@@ -1,8 +1,8 @@
 // `monkey target list` — show all targets, with * marking current.
 
-import * as out from '../../src/log/stdout.js';
-import * as log from '../../src/log/stderr.js';
-import { loadGlobalState } from '../../src/state/load.js';
+import * as out from '../../../log/stdout.js';
+import * as log from '../../../log/stderr.js';
+import { loadGlobalState } from '../../../state/load.js';
 
 export async function runTargetList(): Promise<number> {
   const state = await loadGlobalState();

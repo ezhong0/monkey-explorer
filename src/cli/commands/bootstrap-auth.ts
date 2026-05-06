@@ -10,18 +10,18 @@
 // No `lastSignedInAt` field — bootstrap is always-on, not gated by past state.
 
 import { randomUUID } from 'node:crypto';
-import * as log from '../src/log/stderr.js';
-import { requireGlobalState } from '../src/state/load.js';
-import { updateTarget } from '../src/state/save.js';
-import { resolveTarget } from '../src/state/predicates.js';
-import { createClient } from '../src/bb/client.js';
-import { createContext } from '../src/bb/context.js';
-import { createSession } from '../src/bb/session.js';
-import { createStagehand } from '../src/stagehand/adapter.js';
-import { pickModelApiKey } from '../src/stagehand/modelKey.js';
-import { dispatchSignIn } from '../src/auth/dispatch.js';
-import { isSignedIn, waitForAuthSettled } from '../src/probe/markerDetect.js';
-import { getRootSignal, installSigintHandler } from '../src/signal/abort.js';
+import * as log from '../../log/stderr.js';
+import { requireGlobalState } from '../../state/load.js';
+import { updateTarget } from '../../state/save.js';
+import { resolveTarget } from '../../state/predicates.js';
+import { createClient } from '../../bb/client.js';
+import { createContext } from '../../bb/context.js';
+import { createSession } from '../../bb/session.js';
+import { createStagehand } from '../../stagehand/adapter.js';
+import { pickModelApiKey } from '../../stagehand/modelKey.js';
+import { dispatchSignIn } from '../../auth/dispatch.js';
+import { isSignedIn, waitForAuthSettled } from '../../probe/markerDetect.js';
+import { getRootSignal, installSigintHandler } from '../../signal/abort.js';
 
 export interface BootstrapAuthOpts {
   /** Target name. If omitted, uses currentTarget. */

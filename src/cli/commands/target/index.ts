@@ -1,6 +1,6 @@
 // `monkey target <subcommand>` — dispatch to the right target sub-subcommand.
 
-import * as log from '../../src/log/stderr.js';
+import * as log from '../../../log/stderr.js';
 import { runTargetAdd, type TargetAddOpts } from './add.js';
 import { runTargetList } from './list.js';
 import { runTargetUse } from './use.js';

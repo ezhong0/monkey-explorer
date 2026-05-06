@@ -4,10 +4,10 @@
 // Reports for this target are kept on disk under reports/<target>/ — user can
 // delete manually if desired.
 
-import { confirm } from '../../src/prompts/index.js';
-import * as log from '../../src/log/stderr.js';
-import { requireGlobalState } from '../../src/state/load.js';
-import { saveGlobalState } from '../../src/state/save.js';
+import { confirm } from '../../../prompts/index.js';
+import * as log from '../../../log/stderr.js';
+import { requireGlobalState } from '../../../state/load.js';
+import { saveGlobalState } from '../../../state/save.js';
 
 export async function runTargetRm(
   name: string,

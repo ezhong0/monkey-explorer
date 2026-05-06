@@ -12,13 +12,13 @@
   "main": "./index.ts",
   "types": "./index.ts",
   "bin": {
-    "monkey": "./monkey.ts"
+    "monkey": "./src/cli/main.ts"
   },
   "scripts": {
     "tsc": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "monkey": "tsx monkey.ts"
+    "monkey": "tsx src/cli/main.ts"
   },
   "dependencies": {
     "@browserbasehq/sdk": "2.0.0",
@@ -41,10 +41,8 @@
     "node": ">=20"
   },
   "files": [
-    "monkey.ts",
     "index.ts",
     "src/",
-    "commands/",
     "examples/",
     "README.md",
     "LICENSE"

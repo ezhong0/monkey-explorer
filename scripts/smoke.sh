@@ -30,7 +30,7 @@ fi
 echo "smoke: target=$TARGET mission=\"$MISSION\""
 echo "smoke: running…"
 
-JSON_OUT="$(npx tsx monkey.ts --target "$TARGET" --json --non-interactive "$MISSION" 2>/dev/null)"
+JSON_OUT="$(npx tsx src/cli/main.ts --target "$TARGET" --json --non-interactive "$MISSION" 2>/dev/null)"
 
 if [[ -z "$JSON_OUT" ]]; then
   echo "FAIL: monkey produced no JSON output" >&2

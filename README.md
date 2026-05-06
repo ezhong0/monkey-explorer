@@ -318,20 +318,21 @@ PRs welcome but not guaranteed to be reviewed. Issues filed will be looked at wh
 
 For the curious: subcommand-per-file with functional-core / imperative-shell internals.
 
-- `monkey.ts` — argv parse + dispatch
-- `commands/` — one file per subcommand (`login`, `target/*`, `configure`, `auth`, `list`, `run`)
-- `lib/state/` — global state file I/O (the only place that touches `~/.config/monkey-explorer/`)
-- `lib/bb/` — Browserbase adapter (only place that imports `@browserbasehq/sdk`)
-- `lib/stagehand/` — Stagehand adapter (only place that imports `@browserbasehq/stagehand`)
-- `lib/auth/` — signIn dispatch on AuthMode discriminated union
-- `lib/probe/` — pre-run auth state check (heuristic + AI fallback)
-- `lib/runner/` — mission lifecycle + parallel orchestration
-- `lib/report/` — markdown reports (only writer of reports/)
-- `lib/review/` — Review + Issue Zod schemas; synthetic-Review templates for failure paths
-- `lib/adjudicate/` — post-mission LLM pass that turns trace into Review (with inverse-provenance validator)
-- `lib/observe/` — deterministic Issue lifter (4xx/5xx + console.error/warn)
-- `lib/findings/` — output sanitization helpers (sanitizeText / sanitizeReview)
-- `lib/signal/` — SIGINT handling
+- `src/cli/main.ts` — argv parse + subcommand dispatch (entry point)
+- `src/cli/commands/` — one file per subcommand (`login`, `target/*`, `configure`, `auth`, `list`, `run`)
+- `src/state/` — global state file I/O (the only place that touches `~/.config/monkey-explorer/`)
+- `src/bb/` — Browserbase adapter (only place that imports `@browserbasehq/sdk`)
+- `src/stagehand/` — Stagehand adapter (only place that imports `@browserbasehq/stagehand`); see `QUIRKS.md` for SDK version notes
+- `src/auth/` — signIn dispatch on AuthMode discriminated union
+- `src/probe/` — pre-run auth state check (heuristic + AI fallback) + URL-policy SSRF defense
+- `src/pipeline/` — pure stage functions composed by `src/runner/runMission.ts`: probe, run-agent, fetch-events, lift-issues, build-trace, adjudicate, validate-review
+- `src/runner/` — mission lifecycle + parallel orchestration
+- `src/review/` — Review + Issue Zod schemas; synthetic-Review templates; output sanitization
+- `src/adjudicate/` — post-mission LLM pass that turns trace into Review (with inverse-provenance validator)
+- `src/output/` — formatters: JSON aggregate (Claude consumes this), markdown reports
+- `src/report/` — report file I/O: schema, atomic writes, scan
+- `src/log/` — stderr / stdout writers
+- `src/signal/` — SIGINT handling
 
 Reports follow a discriminated-union schema by status (illegal states unrepresentable). Atomic writes via `<file>.tmp` + rename. Schema versioning so future bumps don't break old listings.
 

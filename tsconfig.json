@@ -18,6 +18,6 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["monkey.ts", "index.ts", "src/**/*.ts", "commands/**/*.ts"],
+  "include": ["index.ts", "src/**/*.ts"],
   "exclude": ["node_modules"]
 }

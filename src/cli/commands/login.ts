@@ -17,19 +17,19 @@
 //
 // "Fully succeed or fully fail": partial flags do NOT fall back to prompts.
 
-import { input, password, select } from '../src/prompts/index.js';
-import * as log from '../src/log/stderr.js';
-import { createClient } from '../src/bb/client.js';
-import { listProjects } from '../src/bb/projects.js';
-import { loadGlobalState } from '../src/state/load.js';
-import { saveGlobalState } from '../src/state/save.js';
-import { getConfigPath } from '../src/state/path.js';
+import { input, password, select } from '../../prompts/index.js';
+import * as log from '../../log/stderr.js';
+import { createClient } from '../../bb/client.js';
+import { listProjects } from '../../bb/projects.js';
+import { loadGlobalState } from '../../state/load.js';
+import { saveGlobalState } from '../../state/save.js';
+import { getConfigPath } from '../../state/path.js';
 import {
   CURRENT_SCHEMA_VERSION,
   DEFAULT_DEFAULTS,
   type Credentials,
   type GlobalState,
-} from '../src/state/schema.js';
+} from '../../state/schema.js';
 
 export interface LoginOpts {
   // Flags. When all required are present, prompts are skipped.

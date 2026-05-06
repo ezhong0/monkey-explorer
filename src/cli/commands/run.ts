@@ -6,31 +6,31 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { input } from '../src/prompts/index.js';
-import * as log from '../src/log/stderr.js';
-import { buildJsonOutput, emitJson } from '../src/output/json.js';
-import { requireGlobalState } from '../src/state/load.js';
-import { updateTarget } from '../src/state/save.js';
-import { resolveTarget } from '../src/state/predicates.js';
-import { getReportsBaseDir } from '../src/state/path.js';
-import { createClient } from '../src/bb/client.js';
-import { sweepStaleTmpFiles, sweepStaleRunningReports } from '../src/report/write.js';
-import { runMissions, summarizeCascadingFailures } from '../src/runner/runMissions.js';
+import { input } from '../../prompts/index.js';
+import * as log from '../../log/stderr.js';
+import { buildJsonOutput, emitJson } from '../../output/json.js';
+import { requireGlobalState } from '../../state/load.js';
+import { updateTarget } from '../../state/save.js';
+import { resolveTarget } from '../../state/predicates.js';
+import { getReportsBaseDir } from '../../state/path.js';
+import { createClient } from '../../bb/client.js';
+import { sweepStaleTmpFiles, sweepStaleRunningReports } from '../../report/write.js';
+import { runMissions, summarizeCascadingFailures } from '../../runner/runMissions.js';
 import {
   computeCost,
   estimateCostRange,
   formatCostEstimate,
   formatCostSummary,
-} from '../src/cost/compute.js';
-import { modelProvider } from '../src/stagehand/modelKey.js';
+} from '../../cost/compute.js';
+import { modelProvider } from '../../stagehand/modelKey.js';
 import { runBootstrapAuth } from './bootstrap-auth.js';
-import type { Credentials, Defaults } from '../src/state/schema.js';
+import type { Credentials, Defaults } from '../../state/schema.js';
 import {
   installSigintHandler,
   registerCleanup,
   getRootSignal,
-} from '../src/signal/abort.js';
-import type { MissionResult, RunStatus } from '../src/types.js';
+} from '../../signal/abort.js';
+import type { MissionResult, RunStatus } from '../../types.js';
 
 export interface RunOpts {
   targetName: string | undefined;

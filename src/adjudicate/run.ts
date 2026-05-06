@@ -21,7 +21,7 @@ import {
   type Review,
 } from '../review/schema.js';
 import type { Trace } from '../trace/schema.js';
-import { validateReview } from './validate.js';
+import { validateReview } from '../pipeline/validate-review.js';
 import {
   createAnthropicClient,
   type AnthropicClient,

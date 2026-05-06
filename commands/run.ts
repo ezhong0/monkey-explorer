@@ -130,6 +130,14 @@ export async function runRun(opts: RunOpts): Promise<number> {
     return 0;
   }
 
+  // In --json mode, Stagehand's internal logging can leak to stdout (some
+  // paths bypass both pino and the logger callback). We hijack stdout for
+  // the duration of bootstrap + mission execution, redirecting writes to
+  // stderr, and restore it before emitJson. Installed BEFORE bootstrap so
+  // the auth-bootstrap session's Stagehand logs don't poison stdout either
+  // (the smoke-test JSON parser caught this regression).
+  const restoreStdout = opts.json ? quarantineStdout() : null;
+
   // Always bootstrap before missions. Eliminates the staleness bug class
   // (mission sessions inheriting old context cookies) by guaranteeing the
   // BB context has fresh cookies right before any mission session attaches.
@@ -152,12 +160,6 @@ export async function runRun(opts: RunOpts): Promise<number> {
   registerCleanup(async () => {
     // Best-effort: per-mission cleanups handle SIGINT propagation.
   });
-
-  // In --json mode, Stagehand's internal logging can leak to stdout (some
-  // paths bypass both pino and the logger callback). We hijack stdout for
-  // the duration of mission execution, redirecting writes to stderr, and
-  // restore it before emitJson. Keeps the JSON output channel clean.
-  const restoreStdout = opts.json ? quarantineStdout() : null;
 
   const invocationId = randomUUID().slice(0, 8);
   const startedAt = Date.now();

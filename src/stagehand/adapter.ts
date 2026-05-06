@@ -1,12 +1,24 @@
-// Anti-corruption boundary: only file in the framework that imports the
-// Stagehand SDK directly.
+// Stagehand SDK adapter — only file that imports the SDK constructor
+// directly. Other modules accept a Stagehand instance via `import type` and
+// call its primitives:
 //
-// Verified during Phase 0 spike:
-// - Constructor field is `browserbaseSessionID` (capital ID)
-// - Page access is `stagehand.context.activePage()` or `context.newPage(url)`
-//   — no top-level `stagehand.page` accessor
-// - Logger callback signature: `(line: LogLine) => void`
-// - Agent factory needs `model: { modelName, apiKey }` separately
+//   - src/stagehand/agent.ts        — runs hybrid-mode agent loops
+//   - src/stagehand/actSignIn.ts    — calls stagehand.act() for password sign-in
+//   - src/probe/markerDetect.ts     — calls stagehand.extract() for auth-state
+//   - src/auth/cookieJar.ts         — calls stagehand.context.conn.send() for CDP cookie inject
+//   - src/auth/dispatch.ts          — passes Stagehand instance through, doesn't call methods
+//   - src/auth/password.ts          — passes through (forwards to stagehand/actSignIn.ts)
+//   - src/probe/probe.ts            — passes through (forwards to markerDetect.ts)
+//
+// SDK quirks that affect this adapter (verified during Phase 0 spike):
+//   - Constructor field is `browserbaseSessionID` (capital ID)
+//   - Page access is `stagehand.context.activePage()` or `context.newPage(url)`
+//     — no top-level `stagehand.page` accessor
+//   - Logger callback signature: `(line: LogLine) => void`
+//   - Agent factory needs `model: { modelName, apiKey }` separately
+//
+// For the full list of Stagehand v3.3 quirks affecting all of monkey, see
+// the QUIRKS comment block in src/stagehand/agent.ts (Phase 3.4 of migration).
 
 import { Stagehand, type LogLine } from '@browserbasehq/stagehand';
 import type { Page } from 'playwright-core';

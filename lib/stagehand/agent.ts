@@ -74,11 +74,16 @@ function ensureV1Suffix(url: string): string {
 
 function classifyError(err: unknown): NonNullable<AgentResult['error']> {
   const e = err as { error?: { type?: string }; status?: number; message?: string };
+  // Anthropic 529 ("Overloaded") + Stagehand's "Failed after N attempts" retry
+  // wrapper both indicate transient capacity issues, not real errors. Bucket
+  // them with rate_limit so the synthetic Review surfaces a retry-style
+  // diagnostic instead of a misleading "errored".
   if (
     e?.error?.type === 'rate_limit_error' ||
     e?.error?.type === 'overloaded_error' ||
     e?.status === 429 ||
-    /token|rate.limit|context.length/i.test(e?.message ?? '')
+    e?.status === 529 ||
+    /token|rate.limit|context.length|overloaded|failed after \d+ attempts/i.test(e?.message ?? '')
   ) {
     return { kind: 'rate_limit', message: e?.message ?? String(err) };
   }
@@ -97,6 +102,12 @@ export async function executeAgent(opts: {
    *  'anthropic' (bypassing Stagehand's modelToAgentProviderMap lookup,
    *  which doesn't know Azure-deployed model names). */
   agentBaseURL?: string;
+  /** Model used for in-agent grounding calls (Stagehand's act/observe/extract
+   *  internals). Stagehand defaults to the agent's model — we override to a
+   *  cheap/fast model so high-frequency grounding doesn't saturate the
+   *  agent's deployment. Typically the same as the per-target stagehandModel. */
+  executionModel?: string;
+  executionApiKey?: string;
   instruction: string;
   maxSteps: number;
   signal: AbortSignal;
@@ -120,6 +131,14 @@ export async function executeAgent(opts: {
         ? { baseURL: ensureV1Suffix(opts.agentBaseURL) }
         : {}),
     },
+    ...(opts.executionModel
+      ? {
+          executionModel: {
+            modelName: opts.executionModel,
+            ...(opts.executionApiKey ? { apiKey: opts.executionApiKey } : {}),
+          },
+        }
+      : {}),
     systemPrompt: SYSTEM_PROMPT,
     mode: 'hybrid' as const,
   });

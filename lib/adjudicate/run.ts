@@ -181,10 +181,21 @@ async function callAdjudicator(
   systemPrompt: string,
   userPrompt: string,
 ): Promise<Review> {
+  // Cache the system prompt: it's ~3-4k tokens of mostly-static instructions,
+  // identical across every adjudication call. Anthropic caches it for 5
+  // minutes; subsequent missions in the same parallel batch hit the cache,
+  // dropping cost ~30% and reducing the request size that contributes to
+  // capacity pressure.
   const message = await client.messages.create({
     model,
     max_tokens: 4096,
-    system: systemPrompt,
+    system: [
+      {
+        type: 'text',
+        text: systemPrompt,
+        cache_control: { type: 'ephemeral' },
+      },
+    ],
     tools: [
       {
         name: ADJUDICATOR_TOOL_NAME,

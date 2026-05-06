@@ -229,6 +229,12 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       agentBaseURL: opts.agentModel.startsWith('anthropic/')
         ? opts.credentials.anthropicBaseURL
         : undefined,
+      // Route Stagehand's in-agent grounding calls (act/extract internals) to
+      // the per-target stagehandModel. Without this, grounding inherits the
+      // agent's expensive opus-tier model and saturates the same deployment
+      // — see Layer 1 in capacity-hardening notes.
+      executionModel: opts.stagehandModel,
+      executionApiKey: pickModelApiKey(opts.stagehandModel, opts.credentials),
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
       signal: opts.signal,

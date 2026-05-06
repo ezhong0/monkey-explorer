@@ -1,9 +1,35 @@
-// Shared types and discriminated unions used across the framework.
+// Cross-cutting types that don't fit neatly under any single domain module.
 //
 // Design invariant: every multi-state concept uses a discriminated union
 // with `kind` as the discriminator (TS-land convention). Adding a new
 // variant to any of these unions becomes a compile error in any consumer
 // that hadn't accounted for it — exhaustiveness via TS `never`.
+//
+// LAYERING CONVENTION
+// -------------------
+// Domain types live with their domain module:
+//   - Review, Issue, Verdict, Diagnostic, Severity, EvidenceType, StepCite
+//       → src/review/schema.ts (Zod-derived)
+//   - Trace, TraceStep, ActionStep
+//       → src/trace/schema.ts (Zod-derived)
+//   - Target, AuthMode, GlobalState, Caps, Credentials, Defaults,
+//     StorageState
+//       → src/state/schema.ts (Zod-derived)
+//   - ReportFrontMatter
+//       → src/report/schema.ts (Zod-derived, versioned)
+//
+// This file holds the types that genuinely cross domain boundaries:
+//   - RunStatus + ALL_RUN_STATUS_KINDS (orchestration state machine)
+//   - FailureCause + ALL_FAILURE_CAUSES (the unified-failure-vocab from S1)
+//   - AdjudicatorErrorKind (legacy; will retire when Phase 4.10 lands)
+//   - MissionResult (orchestration → output handoff)
+//   - ConsoleEvent / NetworkFailure (event shapes; collected from BB)
+//   - ProbeResult (probe phase output)
+//   - SignInFn (public framework API surface for custom auth)
+//
+// Rule of thumb: if a type is consumed by ONE module, define it there.
+// If it's consumed by 3+ modules across different concerns, surface it
+// here.
 
 import type { Page } from 'playwright-core';
 import type { Review } from './review/schema.js';

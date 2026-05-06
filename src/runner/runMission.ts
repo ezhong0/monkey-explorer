@@ -27,7 +27,7 @@ import { createStagehand } from '../stagehand/adapter.js';
 import { executeAgent } from '../stagehand/agent.js';
 import { liftDeterministicIssues } from '../pipeline/lift-issues.js';
 import { pickModelApiKey } from '../stagehand/modelKey.js';
-import { buildTrace } from '../trace/build.js';
+import { buildTrace } from '../pipeline/build-trace.js';
 import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
 import { fetchSessionEvents } from '../pipeline/fetch-events.js';
 import {

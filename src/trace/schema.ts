@@ -77,7 +77,7 @@ export const ActionStepSchema = TraceStepBaseSchema.extend({
   type: z.literal('action'),
   action: ActionRecordSchema,
   // Console/network events whose timestamp falls within this step's window.
-  // Bucketed best-effort by `lib/trace/build.ts`.
+  // Bucketed best-effort by `src/pipeline/build-trace.ts`.
   consoleEvents: z.array(ConsoleEventSchema).default([]),
   networkEvents: z.array(NetworkEventSchema).default([]),
 });

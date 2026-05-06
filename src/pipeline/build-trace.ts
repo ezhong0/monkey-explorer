@@ -28,7 +28,7 @@ import {
   type Trace,
   type TraceHeader,
   type TraceStep,
-} from './schema.js';
+} from '../trace/schema.js';
 
 // Defensive Zod schema for the action shape Stagehand v3.3 emits in hybrid
 // mode. Hybrid populates `type`, `reasoning`, `pageUrl`, `timeMs`, plus

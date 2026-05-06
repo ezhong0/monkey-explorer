@@ -356,7 +356,7 @@ const KNOWN_PUBLIC_SUFFIXES = [
   'replit.app',
 ] as const;
 
-function etldPlus1(hostname: string): string {
+export function etldPlus1(hostname: string): string {
   for (const suffix of KNOWN_PUBLIC_SUFFIXES) {
     if (hostname === suffix) return hostname;
     if (hostname.endsWith(`.${suffix}`)) {

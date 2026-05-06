@@ -115,11 +115,31 @@ function isPrivateIPv6(ip: string): boolean {
   if (lower.startsWith('fe8') || lower.startsWith('fe9') || lower.startsWith('fea') || lower.startsWith('feb')) return true;
   // fc00::/7 — unique local addresses
   if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
-  // IPv4-in-IPv6 forms: ::ffff:a.b.c.d (mapped, modern) and ::a.b.c.d
-  // (compatible, deprecated). Both must be checked — the deprecated form
-  // is a known SSRF bypass (e.g. http://[::169.254.169.254]/ reaches AWS
-  // metadata if only the mapped form is checked).
-  const v4InV6 = lower.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4InV6) return isPrivateIPv4(v4InV6[1]);
+  // IPv4-in-IPv6 forms — both mapped (::ffff:a.b.c.d) and compatible
+  // (::a.b.c.d, deprecated). Both forms can arrive in either dotted notation
+  // OR hex (Node's URL parser normalizes [::169.254.169.254] to
+  // [::a9fe:a9fe], for example). Check both encodings — failing to do so
+  // is a known SSRF bypass (the H5 finding; pre-fix the dotted regex
+  // alone left the hex form open).
+
+  // Dotted form: ::ffff:a.b.c.d or ::a.b.c.d
+  const v4Dotted = lower.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (v4Dotted) return isPrivateIPv4(v4Dotted[1]);
+
+  // Hex form (post-URL-normalization): ::ffff:H1:H2 or ::H1:H2 where H1/H2
+  // are 1-4 hex digits each encoding 16 bits of the embedded IPv4.
+  const v4Hex = lower.match(/^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (v4Hex) {
+    const h1 = parseInt(v4Hex[1], 16);
+    const h2 = parseInt(v4Hex[2], 16);
+    if (h1 <= 0xffff && h2 <= 0xffff) {
+      const a = (h1 >> 8) & 0xff;
+      const b = h1 & 0xff;
+      const c = (h2 >> 8) & 0xff;
+      const d = h2 & 0xff;
+      return isPrivateIPv4(`${a}.${b}.${c}.${d}`);
+    }
+  }
+
   return false;
 }

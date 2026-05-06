@@ -72,7 +72,7 @@ function ensureV1Suffix(url: string): string {
   return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
 }
 
-function classifyError(err: unknown): NonNullable<AgentResult['error']> {
+export function classifyError(err: unknown): NonNullable<AgentResult['error']> {
   const e = err as { error?: { type?: string }; status?: number; message?: string };
   // Anthropic 529 ("Overloaded") + Stagehand's "Failed after N attempts" retry
   // wrapper both indicate transient capacity issues, not real errors. Bucket

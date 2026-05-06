@@ -8,7 +8,7 @@ import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { input } from '../src/prompts/index.js';
 import * as log from '../src/log/stderr.js';
-import { buildJsonOutput, emitJson } from '../src/log/json.js';
+import { buildJsonOutput, emitJson } from '../src/output/json.js';
 import { requireGlobalState } from '../src/state/load.js';
 import { updateTarget } from '../src/state/save.js';
 import { resolveTarget } from '../src/state/predicates.js';

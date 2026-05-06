@@ -3,7 +3,7 @@
 
 import type { ConsoleEvent, NetworkFailure, RunStatus } from '../types.js';
 import { sortIssues, type Verdict } from '../review/schema.js';
-import type { ReportFrontMatter } from './schema.js';
+import type { ReportFrontMatter } from '../report/schema.js';
 
 const RENDERED_EVENT_LIMIT = 10;
 

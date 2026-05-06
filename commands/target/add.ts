@@ -12,16 +12,16 @@
 // Sign-in URL for password mode defaults to `${origin}/sign-in`; override
 // with --sign-in-url for apps that put it elsewhere.
 
-import { input, password as passwordPrompt, select } from '../../lib/prompts/index.js';
-import * as log from '../../lib/log/stderr.js';
-import { requireGlobalState } from '../../lib/state/load.js';
-import { saveGlobalState } from '../../lib/state/save.js';
+import { input, password as passwordPrompt, select } from '../../src/prompts/index.js';
+import * as log from '../../src/log/stderr.js';
+import { requireGlobalState } from '../../src/state/load.js';
+import { saveGlobalState } from '../../src/state/save.js';
 import {
   isValidTargetName,
   TARGET_NAME_PATTERN,
   getCookieJarPathForTarget,
-} from '../../lib/state/path.js';
-import type { AuthMode, GlobalState, Target } from '../../lib/state/schema.js';
+} from '../../src/state/path.js';
+import type { AuthMode, GlobalState, Target } from '../../src/state/schema.js';
 import { runBootstrapAuth } from '../bootstrap-auth.js';
 
 export interface TargetAddOpts {

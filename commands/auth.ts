@@ -31,12 +31,12 @@ import { writeFile, rename } from 'node:fs/promises';
 import { stdin, stdout } from 'node:process';
 import { createInterface } from 'node:readline';
 import { chromium } from 'playwright-core';
-import * as log from '../lib/log/stderr.js';
-import { requireGlobalState } from '../lib/state/load.js';
-import { saveGlobalState } from '../lib/state/save.js';
-import { getChromeProfileDir, getCookieJarPathForTarget } from '../lib/state/path.js';
-import { isValidTargetName } from '../lib/state/path.js';
-import type { GlobalState } from '../lib/state/schema.js';
+import * as log from '../src/log/stderr.js';
+import { requireGlobalState } from '../src/state/load.js';
+import { saveGlobalState } from '../src/state/save.js';
+import { getChromeProfileDir, getCookieJarPathForTarget } from '../src/state/path.js';
+import { isValidTargetName } from '../src/state/path.js';
+import type { GlobalState } from '../src/state/schema.js';
 
 export interface AuthOpts {
   targetName: string;

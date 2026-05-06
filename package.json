@@ -40,7 +40,7 @@
   "files": [
     "monkey.ts",
     "index.ts",
-    "lib/",
+    "src/",
     "commands/",
     "examples/",
     "README.md",

@@ -4,11 +4,11 @@
 // For target-specific changes, use `monkey target add` (re-add) or
 // `monkey target rm` + `monkey target add`.
 
-import { input } from '../lib/prompts/index.js';
-import * as log from '../lib/log/stderr.js';
-import { requireGlobalState } from '../lib/state/load.js';
-import { saveGlobalState } from '../lib/state/save.js';
-import type { Defaults } from '../lib/state/schema.js';
+import { input } from '../src/prompts/index.js';
+import * as log from '../src/log/stderr.js';
+import { requireGlobalState } from '../src/state/load.js';
+import { saveGlobalState } from '../src/state/save.js';
+import type { Defaults } from '../src/state/schema.js';
 
 export async function runConfigure(): Promise<number> {
   const state = await requireGlobalState();

@@ -1,9 +1,9 @@
 // `monkey target show [<name>]` — print target details with secrets redacted.
 // If <name> omitted, shows the current target.
 
-import * as out from '../../lib/log/stdout.js';
-import * as log from '../../lib/log/stderr.js';
-import { requireGlobalState } from '../../lib/state/load.js';
+import * as out from '../../src/log/stdout.js';
+import * as log from '../../src/log/stderr.js';
+import { requireGlobalState } from '../../src/state/load.js';
 
 export async function runTargetShow(name: string | undefined): Promise<number> {
   const state = await requireGlobalState();

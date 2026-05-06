@@ -6,14 +6,14 @@ import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { select } from '../lib/prompts/index.js';
-import * as log from '../lib/log/stderr.js';
-import * as out from '../lib/log/stdout.js';
-import { isStdoutTTY } from '../lib/tty/isTTY.js';
-import { scanReports, type ReportEntry } from '../lib/report/scan.js';
-import { requireGlobalState } from '../lib/state/load.js';
-import { getReportsBaseDir, getReportsDirForTarget } from '../lib/state/path.js';
-import { createClient } from '../lib/bb/client.js';
+import { select } from '../src/prompts/index.js';
+import * as log from '../src/log/stderr.js';
+import * as out from '../src/log/stdout.js';
+import { isStdoutTTY } from '../src/tty/isTTY.js';
+import { scanReports, type ReportEntry } from '../src/report/scan.js';
+import { requireGlobalState } from '../src/state/load.js';
+import { getReportsBaseDir, getReportsDirForTarget } from '../src/state/path.js';
+import { createClient } from '../src/bb/client.js';
 import { readFile } from 'node:fs/promises';
 
 interface DisplayEntry {

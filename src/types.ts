@@ -13,8 +13,73 @@ import type { Review } from './review/schema.js';
 // Surfaced in `adjudicator_failed` RunStatus and JSON output so callers
 // (Claude Code, CI) can distinguish transient quota failures from
 // schema/parse problems vs. unknown SDK errors. Mirrors AdjudicatorError.kind
-// in lib/adjudicate/run.ts.
+// in src/adjudicate/run.ts.
 export type AdjudicatorErrorKind = 'rate_limit' | 'parse' | 'other';
+
+// ─── Failure cause taxonomy (Phase 1.2 of migration) ─────────────────────────
+//
+// Today's codebase uses three vocabularies for the same operational state:
+//   - AgentResult.error.kind:   'timeout' | 'rate_limit' | 'other'
+//                                                    (in src/stagehand/agent.ts)
+//   - agentError.kind in runMission:
+//       'timed_out' | 'exceeded_tokens' | 'errored'
+//   - Diagnostic enum:
+//       'timed_out' | 'rate_limited' | 'parse_failed' | 'token_exceeded'
+//       | 'errored'
+//   - AdjudicatorErrorKind:     'rate_limit' | 'parse' | 'other'
+//
+// The same Anthropic 529 gets called 'rate_limit', 'exceeded_tokens',
+// 'rate_limited' across the three layers. Future maintenance pain.
+//
+// FailureCause is the unified vocabulary the migration is moving toward.
+// Pipeline stages (Phase 4) will return a Result type using this enum.
+// runMission (Phase 4.9) will dispatch on this. Synthetic-Review helpers
+// (Phase 4.10) will be parameterized by this. AdjudicatorErrorKind +
+// agent.error.kind will retire once their callers migrate.
+//
+// Mapping of today's vocabularies to FailureCause:
+//   wallclock          ← timer.fired()
+//   rate_limited       ← agent.error.kind 'rate_limit' OR adjudicator 429/529
+//   budget_exceeded    ← future: caps.tokenBudget enforcement (not wired today)
+//   agent_errored      ← agent.error.kind 'other'
+//   adjudicator_parse  ← adjudicator AdjudicatorError(parse)
+//   adjudicator_other  ← adjudicator AdjudicatorError(other) or unwrapped
+//   probe_failed       ← probe returns kind != 'ok'
+//   infrastructure     ← BB session create / connection / fetch failed
+//   aborted            ← signal.aborted (SIGINT)
+export type FailureCause =
+  | 'wallclock'
+  | 'rate_limited'
+  | 'budget_exceeded'
+  | 'agent_errored'
+  | 'adjudicator_parse'
+  | 'adjudicator_other'
+  | 'probe_failed'
+  | 'infrastructure'
+  | 'aborted';
+
+export const ALL_FAILURE_CAUSES = [
+  'wallclock',
+  'rate_limited',
+  'budget_exceeded',
+  'agent_errored',
+  'adjudicator_parse',
+  'adjudicator_other',
+  'probe_failed',
+  'infrastructure',
+  'aborted',
+] as const satisfies ReadonlyArray<FailureCause>;
+
+// Type-level exhaustiveness guard — adding a new FailureCause variant must
+// also add it to ALL_FAILURE_CAUSES. Mirrors the RunStatus guard below.
+type _FailureCauseExhaustivenessCheck = Exclude<
+  FailureCause,
+  (typeof ALL_FAILURE_CAUSES)[number]
+> extends never
+  ? true
+  : { error: 'ALL_FAILURE_CAUSES missing a variant' };
+const _failureCauseOk: _FailureCauseExhaustivenessCheck = true;
+void _failureCauseOk;
 
 // ─── Run status (per mission) ────────────────────────────────────────────────
 

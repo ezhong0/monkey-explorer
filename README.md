@@ -1,5 +1,7 @@
 # monkey-explorer
 
+[![CI](https://github.com/ezhong0/monkey-explorer/actions/workflows/ci.yml/badge.svg)](https://github.com/ezhong0/monkey-explorer/actions/workflows/ci.yml)
+
 Autonomous functional reviewer for deployed web apps. Dispatch monkeys at a feature; each comes back with a verdict (works / broken / partial / unclear), a short summary, the issues it observed, and what it suggests as follow-up. Designed to close the AI-driven development feedback loop: Claude makes a change, dispatches monkeys to review the affected functionality, reads the verdict, decides whether to ship or iterate.
 
 ```bash

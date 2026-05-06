@@ -1,0 +1,45 @@
+version: 2
+updates:
+  # npm dependencies — group safe minor + patch bumps to reduce noise.
+  # Stagehand + Browserbase intentionally excluded from the group: their
+  # bumps need manual review against src/stagehand/QUIRKS.md and the smoke
+  # test, so individual PRs make that gating clear.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-tooling:
+        patterns:
+          - 'vitest'
+          - '@vitest/*'
+          - 'typescript'
+          - '@types/*'
+        update-types:
+          - 'minor'
+          - 'patch'
+      runtime-deps:
+        patterns:
+          - 'zod'
+          - 'mri'
+          - 'dotenv'
+          - 'proper-lockfile'
+          - 'tsx'
+          - '@inquirer/prompts'
+        update-types:
+          - 'minor'
+          - 'patch'
+    # Keep these as separate PRs (need careful review).
+    ignore:
+      - dependency-name: '@browserbasehq/sdk'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@browserbasehq/stagehand'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@anthropic-ai/sdk'
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

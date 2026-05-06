@@ -29,7 +29,7 @@ import { liftDeterministicIssues } from '../pipeline/lift-issues.js';
 import { pickModelApiKey } from '../stagehand/modelKey.js';
 import { buildTrace } from '../trace/build.js';
 import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
-import { fetchSessionEvents } from '../observe/fetchEvents.js';
+import { fetchSessionEvents } from '../pipeline/fetch-events.js';
 import {
   reviewForAborted,
   reviewForAdjudicatorFailed,

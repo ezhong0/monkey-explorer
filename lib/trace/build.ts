@@ -6,52 +6,107 @@
 //
 // Step IDs:
 //   - Action steps: `step_NNNN` from action index (Stagehand's actions[] order)
-//   - Observation steps: `step_NNNN` continuing from action count
 //   - Lifter event steps: `step_console_NNNN` / `step_network_NNNN` (introduced
 //     by lib/observe/promote.ts, NOT here — they exist on the deterministic
-//     findings' provenance directly without a corresponding trace step entry)
+//     issues' cites directly without a corresponding trace step entry)
+//
+// In hybrid mode, each Stagehand action carries `type` + `reasoning` + tool-
+// specific args + `pageUrl` + `timeMs`. summarizeAction prefers the model's
+// `reasoning` text and falls back to a synthesized "type(args)" form for
+// pixel-level actions.
 //
 // Best-effort timestamp correlation: console/network events are bucketed
 // into the action step whose timestamp window covers them. If no action
 // covers an event, it floats unattached (still cited via lifter stepIds).
 
 import { z } from 'zod';
-import type {
-  RecordedObservation,
-} from '../stagehand/agent.js';
 import * as log from '../log/stderr.js';
 import type { ConsoleEvent, NetworkFailure } from '../types.js';
 import {
-  buildStepIndex,
   makeStepId,
   type ActionStep,
-  type ObservationStep,
   type Trace,
   type TraceHeader,
   type TraceStep,
 } from './schema.js';
 
-// Defensive Zod schema for the action shape Stagehand v3.3.0 emits. We only
-// read a few fields; anything else is allowed (`.passthrough()`) so a
-// future Stagehand minor doesn't break trace building. If a runtime action
-// fails this loose schema, it's dropped with a warning rather than poisoning
-// the trace.
+// Defensive Zod schema for the action shape Stagehand v3.3 emits in hybrid
+// mode. Hybrid populates `type`, `reasoning`, `pageUrl`, `timeMs`, plus
+// tool-specific args (action for `act`, x/y for click, text for type, etc.).
+// `passthrough()` so Stagehand minor bumps don't break trace building.
 const StagehandActionRawSchema = z
   .object({
+    type: z.string().optional(),
     description: z.string().optional(),
     method: z.string().optional(),
     reasoning: z.string().optional(),
     pageUrl: z.string().optional(),
-    timestamp: z.number().optional(), // Stagehand sets via Date.now()
+    timeMs: z.number().optional(),
+    timestamp: z.number().optional(), // legacy fallback
   })
   .passthrough();
 
 type StagehandActionRaw = z.infer<typeof StagehandActionRawSchema>;
 
+// Build a short, factual one-line description from the action's structured
+// fields. Used by the adjudicator's trace summary, so this is the LLM's
+// only window into what the agent did at each step.
+function summarizeAction(a: StagehandActionRaw): string {
+  // Hybrid mode populates `reasoning` for semantic actions (act, goto, extract).
+  // Combine with the natural-language `action` arg when present.
+  if (a.reasoning && a.reasoning.trim().length > 0) {
+    const arg = (a as Record<string, unknown>).action;
+    if (typeof arg === 'string' && arg.length > 0) {
+      return `${a.type ?? 'action'}("${arg}"): ${a.reasoning}`;
+    }
+    return `${a.type ?? 'action'}: ${a.reasoning}`;
+  }
+  if (a.description && a.description.trim().length > 0) return a.description;
+
+  // Pixel-level fallback: synthesize from type + args.
+  const type = a.type ?? a.method ?? 'action';
+  const args = formatActionArgs(type, a as Record<string, unknown>);
+  return args ? `${type}(${args})` : `${type}()`;
+}
+
+function formatActionArgs(type: string, raw: Record<string, unknown>): string {
+  switch (type) {
+    case 'click':
+    case 'double_click':
+    case 'right_click': {
+      const x = raw.x;
+      const y = raw.y;
+      const button = raw.button;
+      const xy = typeof x === 'number' && typeof y === 'number' ? `${x},${y}` : '';
+      return [xy, button ? `button=${String(button)}` : ''].filter(Boolean).join(' ');
+    }
+    case 'type': {
+      const text = typeof raw.text === 'string' ? raw.text : '';
+      const truncated = text.length > 80 ? `${text.slice(0, 77)}…` : text;
+      return JSON.stringify(truncated);
+    }
+    case 'dragAndDrop': {
+      const fx = raw.fromX, fy = raw.fromY, tx = raw.toX, ty = raw.toY;
+      if ([fx, fy, tx, ty].every((v) => typeof v === 'number')) {
+        return `(${fx},${fy})→(${tx},${ty})`;
+      }
+      return '';
+    }
+    case 'goto': {
+      const url = raw.url;
+      return typeof url === 'string' ? JSON.stringify(url) : '';
+    }
+    case 'screenshot':
+    case 'done':
+      return '';
+    default:
+      return '';
+  }
+}
+
 export interface BuildTraceInput {
   header: Omit<TraceHeader, 'type' | 'schemaVersion'>;
   rawActions: unknown[];
-  observations: RecordedObservation[];
   consoleErrors: ConsoleEvent[];
   networkFailures: NetworkFailure[];
 }
@@ -82,16 +137,20 @@ export function buildTrace(input: BuildTraceInput): Trace {
       `trace builder: dropped ${rejectedActionCount} Stagehand action(s) that failed schema validation. Stagehand SDK shape may have drifted.`,
     );
   }
+  // Sort by timeMs (or legacy timestamp) when present, else preserve order.
+  // Tolerates undefined for the past-the-end lookup at the loop boundary.
+  const actionTime = (a: StagehandActionRaw | undefined): number =>
+    a?.timeMs ?? a?.timestamp ?? 0;
   const sortedActions: StagehandActionRaw[] = validatedActions
     .slice()
-    .sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    .sort((a, b) => actionTime(a) - actionTime(b));
 
   const actionSteps: ActionStep[] = [];
   for (let i = 0; i < sortedActions.length; i++) {
     const a = sortedActions[i];
-    const tsMs = a.timestamp ?? Date.now();
+    const tsMs = actionTime(a) || Date.now();
     const tsIso = new Date(tsMs).toISOString();
-    const nextTsMs = sortedActions[i + 1]?.timestamp ?? Number.POSITIVE_INFINITY;
+    const nextTsMs = actionTime(sortedActions[i + 1]) || Number.POSITIVE_INFINITY;
 
     const consoleInWindow = input.consoleErrors.filter((e) => {
       const t = Date.parse(e.timestamp);
@@ -109,8 +168,8 @@ export function buildTrace(input: BuildTraceInput): Trace {
       url: a.pageUrl ?? '',
       type: 'action',
       action: {
-        description: a.description ?? '(no description)',
-        method: a.method,
+        description: summarizeAction(a),
+        method: a.type ?? a.method,
         reasoning: a.reasoning,
       },
       consoleEvents: consoleInWindow.map((e) => ({
@@ -129,21 +188,6 @@ export function buildTrace(input: BuildTraceInput): Trace {
     });
   }
 
-  // Observations get appended as separate steps after action steps. They
-  // could be interleaved by timestamp, but since they fire from inside the
-  // explorer's tool callback, we don't always know which Stagehand step they
-  // pair with. Appending preserves the data without forcing a wrong ordering.
-  const observationSteps: ObservationStep[] = input.observations.map((o, i) => ({
-    id: makeStepId(actionSteps.length + i),
-    index: actionSteps.length + i,
-    timestamp: o.recordedAt,
-    url: '', // unknown; observation didn't capture the URL
-    type: 'observation',
-    text: o.text,
-  }));
-
-  const steps: TraceStep[] = [...actionSteps, ...observationSteps];
+  const steps: TraceStep[] = actionSteps;
   return { header, steps };
 }
-
-export { buildStepIndex };

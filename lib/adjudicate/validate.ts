@@ -1,146 +1,66 @@
-// Validation pipeline for adjudicator output.
+// Validation pipeline for adjudicator output (Review).
 //
-// The adjudicator LLM emits AdjudicatedFinding[] via tool({inputSchema}).
-// Zod parsing happens at the tool boundary. AFTER parsing, we still have to:
-//   1. Cross-reference each provenance.stepId against the trace's step set.
-//   2. Confirm the cited evidenceType actually exists in that step (cited
-//      `network` → step has network events; cited `console` → step has
-//      console events; cited `observation` → the step IS an observation).
-//   3. Partition provenance into valid + invalid entries (don't all-or-nothing).
-//   4. Assign tier:
-//        - At least one valid oracle-evidence entry → `verified`
-//        - Otherwise (only screenshot/observation/dom/diff that don't cross-reference) → `speculative`
-//        - Zero valid entries → `speculative` + `validation_failed` populated
-// Demote-don't-drop: preserve the model's signal, downgrade trust.
+// The adjudicator LLM emits a Review via tool({inputSchema}). Zod parsing
+// happens at the tool boundary (cross-field constraints handled there).
+// AFTER Zod, this module enforces two cross-reference invariants:
+//
+//   1. Forward provenance: every Issue's cites[].stepId must reference a
+//      real trace step OR a lifter-introduced step.
+//   2. Inverse provenance: every critical/high lifter Issue must appear in
+//      review.issues[]. The LLM cannot silently drop high-severity
+//      deterministic signals — that would corrupt the verdict.
+//
+// On either failure, return { ok: false, reason } so the caller can retry
+// the LLM with the failure message as feedback.
 
-import type { AdjudicatedFinding } from '../findings/schema.js';
-import { ORACLE_EVIDENCE_TYPES, type EvidenceType, type Finding, type Provenance, type Tier } from '../types.js';
-import type { Trace, TraceStep } from '../trace/schema.js';
+import type { Issue, Review } from '../review/schema.js';
+import type { Trace } from '../trace/schema.js';
 
-function isOracleEvidence(t: EvidenceType): boolean {
-  return (ORACLE_EVIDENCE_TYPES as readonly EvidenceType[]).includes(t);
-}
+export type ValidateResult = { ok: true } | { ok: false; reason: string };
 
-function stepHasEvidence(step: TraceStep, type: EvidenceType): boolean {
-  switch (type) {
-    case 'console':
-      return step.type === 'action' && step.consoleEvents.length > 0;
-    case 'network':
-      return step.type === 'action' && step.networkEvents.length > 0;
-    case 'observation':
-      return step.type === 'observation';
-    case 'screenshot':
-    case 'dom':
-    case 'diff':
-      // V1 trace doesn't capture per-step screenshots, DOM snapshots, or
-      // baseline diffs. Citations against these types fail cross-reference;
-      // the finding gets demoted to speculative with validation_failed.
-      return false;
-  }
-}
-
-/** Lifter-introduced stepIds (e.g. step_console_NNNN, step_network_NNNN)
- *  exist as provenance targets without corresponding trace steps. They're
- *  always valid for their declared evidence type by construction. */
-function isLifterStepId(stepId: string): EvidenceType | null {
-  if (stepId.startsWith('step_console_')) return 'console';
-  if (stepId.startsWith('step_network_')) return 'network';
-  return null;
-}
-
-interface ValidatedProvenance {
-  valid: Provenance[];
-  invalid: Array<{ entry: Provenance; reason: string }>;
-}
-
-function validateProvenance(
-  raw: Provenance[],
+export function validateReview(
+  review: Review,
+  lifterIssues: Issue[],
   trace: Trace,
-  lifterStepIds: ReadonlySet<string>,
-): ValidatedProvenance {
-  const stepById = new Map(trace.steps.map((s) => [s.id, s] as const));
-  const valid: Provenance[] = [];
-  const invalid: ValidatedProvenance['invalid'] = [];
+): ValidateResult {
+  const traceStepIds = new Set(trace.steps.map((s) => s.id));
+  const lifterStepIds = new Set(lifterIssues.flatMap((i) => i.cites.map((c) => c.stepId)));
+  const allKnownStepIds = new Set([...traceStepIds, ...lifterStepIds]);
 
-  for (const p of raw) {
-    // Lifter stepIds: validate against their declared type
-    const lifterType = isLifterStepId(p.stepId);
-    if (lifterType !== null) {
-      if (!lifterStepIds.has(p.stepId)) {
-        invalid.push({ entry: p, reason: `unknown lifter stepId: ${p.stepId}` });
-        continue;
+  // 1. Forward provenance — every cite must reference a real step.
+  for (const issue of review.issues) {
+    for (const cite of issue.cites) {
+      if (!allKnownStepIds.has(cite.stepId)) {
+        return {
+          ok: false,
+          reason: `Issue cites non-existent step ${cite.stepId}: "${issue.summary}"`,
+        };
       }
-      if (p.evidenceType !== lifterType) {
-        invalid.push({
-          entry: p,
-          reason: `lifter stepId ${p.stepId} is type '${lifterType}', not '${p.evidenceType}'`,
-        });
-        continue;
-      }
-      valid.push(p);
-      continue;
     }
-
-    // Trace stepIds: must be in the trace's step set
-    const step = stepById.get(p.stepId);
-    if (!step) {
-      invalid.push({ entry: p, reason: `unknown stepId: ${p.stepId}` });
-      continue;
-    }
-    if (!stepHasEvidence(step, p.evidenceType)) {
-      invalid.push({
-        entry: p,
-        reason: `step ${p.stepId} has no ${p.evidenceType} evidence`,
-      });
-      continue;
-    }
-    valid.push(p);
   }
 
-  return { valid, invalid };
-}
-
-function pickTier(valid: Provenance[]): Tier {
-  return valid.some((p) => isOracleEvidence(p.evidenceType)) ? 'verified' : 'speculative';
-}
-
-/** Run the validation pipeline against one adjudicator finding.
- *  Returns the persistable Finding (with tier + maybe validation_failed). */
-export function validateAndTier(
-  raw: AdjudicatedFinding,
-  trace: Trace,
-  lifterStepIds: ReadonlySet<string>,
-): Finding {
-  const { valid, invalid } = validateProvenance(raw.provenance, trace, lifterStepIds);
-
-  if (valid.length === 0) {
-    return {
-      severity: raw.severity,
-      summary: raw.summary,
-      details: raw.details,
-      provenance: raw.provenance,
-      tier: 'speculative',
-      validation_failed: invalid.map((e) => e.reason).join('; ') || 'no valid provenance',
-    };
+  // 2. Inverse provenance — every critical/high lifter Issue must appear
+  //    somewhere in review.issues. We match by stepId overlap (the LLM may
+  //    re-cast the lifter's wording, downgrade severity, or merge multiple
+  //    lifter issues into one review issue — all fine — but the cited
+  //    stepIds must be present).
+  for (const lifterIssue of lifterIssues) {
+    if (lifterIssue.severity !== 'critical' && lifterIssue.severity !== 'high') continue;
+    const lifterStepIdsForThis = new Set(lifterIssue.cites.map((c) => c.stepId));
+    const present = review.issues.some((reviewIssue) =>
+      reviewIssue.cites.some((cite) => lifterStepIdsForThis.has(cite.stepId)),
+    );
+    if (!present) {
+      return {
+        ok: false,
+        reason:
+          `Lifter detected ${lifterIssue.severity}-severity issue at ` +
+          `${[...lifterStepIdsForThis].join(',')} ("${lifterIssue.summary}") ` +
+          `that does not appear in review.issues. You may downgrade severity ` +
+          `if you judge it noise, but you cannot omit high-severity lifter signals.`,
+      };
+    }
   }
 
-  const validation_failed =
-    invalid.length > 0 ? `dropped ${invalid.length} invalid: ${invalid.map((e) => e.reason).join('; ')}` : undefined;
-
-  return {
-    severity: raw.severity,
-    summary: raw.summary,
-    details: raw.details,
-    provenance: valid,
-    tier: pickTier(valid),
-    ...(validation_failed ? { validation_failed } : {}),
-  };
-}
-
-export function validateAdjudicatedFindings(
-  raws: AdjudicatedFinding[],
-  trace: Trace,
-  lifterStepIds: ReadonlySet<string>,
-): Finding[] {
-  return raws.map((r) => validateAndTier(r, trace, lifterStepIds));
+  return { ok: true };
 }

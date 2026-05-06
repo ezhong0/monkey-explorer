@@ -100,12 +100,25 @@ export function sanitizeText(text: string): string {
   return out;
 }
 
-import type { Finding } from '../types.js';
+import type { Issue, Review } from '../review/schema.js';
 
-export function sanitizeFinding(f: Finding): Finding {
+export function sanitizeIssue(issue: Issue): Issue {
   return {
-    ...f,
-    summary: sanitizeText(f.summary),
-    details: sanitizeText(f.details),
+    ...issue,
+    summary: sanitizeText(issue.summary),
+    details: sanitizeText(issue.details),
+  };
+}
+
+export function sanitizeReview(review: Review): Review {
+  return {
+    ...review,
+    summary: sanitizeText(review.summary),
+    issues: review.issues.map(sanitizeIssue),
+    suggestions: review.suggestions.map(sanitizeText),
+    // tested[] and worked[] are agent-authored short labels — not user
+    // input, but still passed through sanitization for defense in depth.
+    tested: review.tested.map(sanitizeText),
+    worked: review.worked.map(sanitizeText),
   };
 }

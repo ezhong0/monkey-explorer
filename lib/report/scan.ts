@@ -40,18 +40,21 @@ function parseReportEntry(filePath: string, text: string): ReportEntry | null {
   const raw = parseYamlFlat(yamlText);
   const versionGuess = Number(raw['$schema_version']);
   switch (versionGuess) {
+    case 2:
+      return parseCurrent(filePath, raw);
     case 1:
-      return parseV1(filePath, raw);
+      // v1 reports predate the reviewer reframe. They lack `verdict` and
+      // use `findings_count` instead of `issues_count`. We don't migrate
+      // their content — `monkey runs` shows them with no verdict glyph.
+      return null;
     default:
-      // Unknown version → skip with stderr note (caller decides whether to log)
       return null;
   }
 }
 
-function parseV1(filePath: string, raw: Record<string, unknown>): ReportEntry | null {
+function parseCurrent(filePath: string, raw: Record<string, unknown>): ReportEntry | null {
   const result = ReportFrontMatterSchema.safeParse(raw);
   if (!result.success) {
-    // Best-effort: corrupted v1 report. Skip rather than crash.
     return null;
   }
   return { filePath, frontMatter: result.data };

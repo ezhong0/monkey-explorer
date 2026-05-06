@@ -6,63 +6,31 @@
 // that hadn't accounted for it — exhaustiveness via TS `never`.
 
 import type { Page } from 'playwright-core';
+import type { Review } from './review/schema.js';
 
-// ─── Findings ────────────────────────────────────────────────────────────────
+// ─── Adjudicator failure kinds ───────────────────────────────────────────────
 
-export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'observation';
-
-// Evidence types the adjudicator may cite. V1 trace captures network +
-// console + observation; screenshot/dom/diff are forward-compat slots
-// (V2 trace adds per-step screenshots; baseline mode adds diff).
-// In V1, citations against unsupported types fail cross-reference and
-// the finding is demoted to `speculative` with `validation_failed`.
-export type EvidenceType =
-  | 'network'      // step has 4xx/5xx or net::ERR — oracle-backed
-  | 'console'      // step has console.error or .warn — oracle-backed
-  | 'observation'  // explorer's record_observation text at a step — NOT oracle (LLM-generated)
-  | 'screenshot'   // V2: per-step screenshot — NOT oracle (VLM hallucination risk)
-  | 'dom'          // V2: per-step DOM snapshot — oracle-backed
-  | 'diff';        // V2 baseline mode: diff against baseline run — oracle-backed
-
-// Oracle-backed evidence types tier as `verified`. Others (observation,
-// screenshot) tier as `speculative` even when valid — the underlying data
-// is LLM- or VLM-generated, not ground truth.
-export const ORACLE_EVIDENCE_TYPES = ['network', 'console', 'dom', 'diff'] as const satisfies ReadonlyArray<EvidenceType>;
-
-export type Tier = 'verified' | 'speculative';
-
-// Adjudicator failure kinds — surfaced in `adjudicator_failed` RunStatus and
-// JSON output so callers (Claude Code, CI) can distinguish transient quota
-// failures from schema/parse problems vs. unknown SDK errors. Mirrors
-// AdjudicatorError.kind in lib/adjudicate/run.ts.
+// Surfaced in `adjudicator_failed` RunStatus and JSON output so callers
+// (Claude Code, CI) can distinguish transient quota failures from
+// schema/parse problems vs. unknown SDK errors. Mirrors AdjudicatorError.kind
+// in lib/adjudicate/run.ts.
 export type AdjudicatorErrorKind = 'rate_limit' | 'parse' | 'other';
-
-export interface Provenance {
-  stepId: string;          // matches /^step_\d{4,}$/
-  evidenceType: EvidenceType;
-}
-
-export interface Finding {
-  severity: Severity;
-  summary: string;
-  details: string;
-  // V2 fields (optional during migration; required for adjudicator output):
-  provenance?: Provenance[];
-  tier?: Tier;
-  validation_failed?: string; // populated when demoted by validation pipeline
-}
 
 // ─── Run status (per mission) ────────────────────────────────────────────────
 
+// Every status that ran (or attempted to run) the agent carries a Review.
+// For completed runs, the Review is the adjudicator's output. For
+// non-completed runs, monkey synthesizes a Review (verdict='unclear' +
+// diagnostic) so JSON consumers don't have to branch on "is review present."
 export type RunStatus =
   | { kind: 'running' }
-  | { kind: 'completed'; findings: Finding[]; ranForMs: number; tokensUsed?: number }
-  | { kind: 'timed_out'; findings: Finding[]; ranForMs: number }
-  | { kind: 'exceeded_tokens'; findings: Finding[]; ranForMs: number }
-  | { kind: 'adjudicator_failed'; error: string; errorKind: AdjudicatorErrorKind; findings: Finding[]; ranForMs: number }         // deterministic findings still ship
-  | { kind: 'errored'; error: string; ranForMs: number }
-  | { kind: 'not_started'; reason: string }
-  | { kind: 'aborted'; ranForMs: number };
+  | { kind: 'completed'; review: Review; ranForMs: number; tokensUsed?: number }
+  | { kind: 'timed_out'; review: Review; ranForMs: number }
+  | { kind: 'exceeded_tokens'; review: Review; ranForMs: number }
+  | { kind: 'adjudicator_failed'; review: Review; error: string; errorKind: AdjudicatorErrorKind; ranForMs: number }
+  | { kind: 'errored'; review: Review; error: string; ranForMs: number }
+  | { kind: 'not_started'; review: Review; reason: string }
+  | { kind: 'aborted'; review: Review; ranForMs: number };
 
 export const ALL_RUN_STATUS_KINDS = [
   'running',
@@ -132,10 +100,6 @@ export interface MissionResult {
   mission: string;
   target: string;
   status: RunStatus;
-  /** PASS / FAIL / INCONCLUSIVE — locked at mission-terminal time so it
-   *  can't drift if findings get post-processed later (sanitization,
-   *  replay, etc.). Computed via lib/runner/verdict.ts. */
-  verdict: 'pass' | 'fail' | 'inconclusive';
   sessionId: string | null;
   replayUrl: string | null;
   startedAt: string;
@@ -144,4 +108,3 @@ export interface MissionResult {
   consoleErrors: ConsoleEvent[];
   networkFailures: NetworkFailure[];
 }
-

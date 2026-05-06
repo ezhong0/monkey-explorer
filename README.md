@@ -1,6 +1,6 @@
 # monkey-explorer
 
-AI-agent-driven exploratory testing for any web app. Add an app, write missions in plain English, get markdown reports.
+Autonomous functional reviewer for deployed web apps. Dispatch monkeys at a feature; each comes back with a verdict (works / broken / partial / unclear), a short summary, the issues it observed, and what it suggests as follow-up. Designed to close the AI-driven development feedback loop: Claude makes a change, dispatches monkeys to review the affected functionality, reads the verdict, decides whether to ship or iterate.
 
 ```bash
 npx github:ezhong0/monkey-explorer login
@@ -27,13 +27,37 @@ State lives at `~/.config/monkey-explorer/config.json` (mode 0600). Run from any
 
 ## How it works
 
-monkey-explorer dispatches an AI agent (Stagehand) running in a cloud browser (Browserbase) to test apps you point it at. Each "mission" is a natural-language prompt; the agent explores, identifies findings (bugs, polish issues, observations), and writes a markdown report.
+Each mission spawns one monkey: an AI agent (Stagehand) in a cloud browser (Browserbase) that exercises a feature like a real user, taking notes (`TRIED:` / `OBSERVED:` / `CONCERN:`) as it goes. After the run, an adjudicator pass turns the trace into a structured **Review**:
+
+| Field | Description |
+|---|---|
+| `verdict` | `works` (ship-ready) · `broken` (block ship) · `partial` (works with caveats) · `unclear` (default when ambiguous or run errored) |
+| `summary` | 1–3 sentence summary of what was reviewed and why the verdict is what it is |
+| `tested[]` | Behaviors the agent actually exercised |
+| `worked[]` | Behaviors the agent verified working |
+| `issues[]` | Problems observed — agent-noticed AND auto-promoted from 4xx/5xx + console errors |
+| `suggestions[]` | Optional follow-ups for the human reviewer |
 
 Multiple missions run in parallel:
 
 ```bash
-monkey "test the dashboard" "test the settings page" "test mobile responsiveness"
+monkey "review the deploy flow on /app/custom-tools" \
+       "review the search filters on /jobs" \
+       "review pagination on /history"
 ```
+
+### Writing missions (Claude-facing)
+
+The mission prose tells the monkey what feature to exercise and what to pay attention to. Good missions:
+
+| Pattern | Example |
+|---|---|
+| Name the feature + flow | `"review the deploy flow on /app/custom-tools"` |
+| Add a "pay attention to" hint | `"review the deploy flow on /app/custom-tools, paying attention to the unsaved-edits indicator across tool switches"` |
+| Discovery (no specific feature) | `"review the dashboard"` — same agent loop; verdict is framed as a review of whatever the agent found |
+| Reproduction-style (after a fix) | `"verify the avatar dropdown opens once and only once after the recent fix"` |
+
+Missions to avoid: code-walkthrough prompts (`"check whether handleSubmit calls validate"`), assertion DSLs, multi-feature kitchen-sink missions. One feature per monkey.
 
 ## Quickstart
 
@@ -170,8 +194,8 @@ monkey target add staging \
   --auth-mode cookie-jar \
   --cookie-jar-path "$HOME/.config/monkey-explorer/cookie-jars/staging.json"
 
-# Run with structured output
-monkey --json --non-interactive "test the signup flow"
+# Run with structured output (verdict + Review at the top, full details below)
+monkey --json --non-interactive "review the signup flow"
 ```
 
 `--skip-bootstrap` on `target add` skips the auto-bootstrap step. Run `monkey auth <name>` later to provision the cookie.
@@ -191,10 +215,10 @@ ACTIVE (2):
   prod                 [0m 45s]   test the settings page       https://...
 
 RECENT (3):
-  TIME       TARGET               MISSION   DURATION  FINDINGS      REPLAY
-  20:15  ✓  staging     test mobile responsiveness  4m 22s    3 findings    https://...
-  19:42  ✓  staging     sidebar nav items           2m 14s    8 findings    https://...
-  19:09  ✗  prod                 test job submission         0m 30s                  https://...
+  TIME       TARGET               MISSION   DURATION  ISSUES      REPLAY
+  20:15  ✓  staging     review mobile responsiveness  4m 22s    3 issue(s)    https://...
+  19:42  ◐  staging     review sidebar nav items      2m 14s    1 issue(s)    https://...
+  19:09  ✗  prod        review job submission         0m 30s    2 issue(s)    https://...
 ```
 
 In a TTY: arrow keys + enter to drill into a report. Piped: static text, greppable.
@@ -303,7 +327,10 @@ For the curious: subcommand-per-file with functional-core / imperative-shell int
 - `lib/probe/` — pre-run auth state check (heuristic + AI fallback)
 - `lib/runner/` — mission lifecycle + parallel orchestration
 - `lib/report/` — markdown reports (only writer of reports/)
-- `lib/findings/` — sanitization + Zod schemas
+- `lib/review/` — Review + Issue Zod schemas; synthetic-Review templates for failure paths
+- `lib/adjudicate/` — post-mission LLM pass that turns trace into Review (with inverse-provenance validator)
+- `lib/observe/` — deterministic Issue lifter (4xx/5xx + console.error/warn)
+- `lib/findings/` — output sanitization helpers (sanitizeText / sanitizeReview)
 - `lib/signal/` — SIGINT handling
 
 Reports follow a discriminated-union schema by status (illegal states unrepresentable). Atomic writes via `<file>.tmp` + rename. Schema versioning so future bumps don't break old listings.

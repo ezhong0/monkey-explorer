@@ -2,17 +2,20 @@
 // states unrepresentable. Each variant carries only the fields that variant
 // actually populates.
 //
-// Per-version dispatch in scan.ts; this is the v1 schema only.
+// Per-version dispatch in scan.ts; this is the v2 schema (v1 used the
+// pre-reframe findings list + derived verdict; v2 carries Review.verdict
+// directly and renames findings_count → issues_count).
 
 import { z } from 'zod';
-import { FindingSchema } from '../findings/schema.js';
+import { VerdictSchema } from '../review/schema.js';
 
 /**
  * Report-file front-matter schema version. Independent of the global config
  * schema version (lib/state/schema.ts CURRENT_SCHEMA_VERSION) — reports have
- * their own evolution.
+ * their own evolution. Bumped from 1 → 2 with the reviewer reframe (Review
+ * replaces Findings; verdict is a structured field, not derived).
  */
-export const REPORT_SCHEMA_VERSION = 1 as const;
+export const REPORT_SCHEMA_VERSION = 2 as const;
 
 const Common = {
   $schema_version: z.literal(REPORT_SCHEMA_VERSION),
@@ -38,7 +41,8 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     session_id: z.string(),
     replay_url: z.string().url(),
     ranForMs: z.number(),
-    findings_count: z.number().int().nonnegative(),
+    verdict: VerdictSchema,
+    issues_count: z.number().int().nonnegative(),
     tokens_used: z.number().int().nonnegative().nullable().optional(),
   }),
   z.object({
@@ -48,7 +52,8 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     session_id: z.string(),
     replay_url: z.string().url(),
     ranForMs: z.number(),
-    findings_count: z.number().int().nonnegative(),
+    verdict: VerdictSchema,
+    issues_count: z.number().int().nonnegative(),
   }),
   z.object({
     ...Common,
@@ -57,7 +62,8 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     session_id: z.string(),
     replay_url: z.string().url(),
     ranForMs: z.number(),
-    findings_count: z.number().int().nonnegative(),
+    verdict: VerdictSchema,
+    issues_count: z.number().int().nonnegative(),
   }),
   z.object({
     ...Common,
@@ -66,7 +72,8 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     session_id: z.string(),
     replay_url: z.string().url(),
     ranForMs: z.number(),
-    findings_count: z.number().int().nonnegative(),
+    verdict: VerdictSchema,
+    issues_count: z.number().int().nonnegative(),
     error: z.string(),
     error_kind: z.enum(['rate_limit', 'parse', 'other']),
   }),
@@ -77,6 +84,7 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     session_id: z.string().nullable(),
     replay_url: z.string().url().nullable(),
     ranForMs: z.number(),
+    verdict: VerdictSchema,
     error: z.string(),
   }),
   z.object({
@@ -85,6 +93,7 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     finished_at: z.string().datetime(),
     session_id: z.string().nullable(),
     replay_url: z.string().url().nullable(),
+    verdict: VerdictSchema,
     reason: z.string(),
   }),
   z.object({
@@ -94,6 +103,7 @@ export const ReportFrontMatterSchema = z.discriminatedUnion('status', [
     session_id: z.string().nullable(),
     replay_url: z.string().url().nullable(),
     ranForMs: z.number(),
+    verdict: VerdictSchema,
   }),
 ]);
 
@@ -101,7 +111,7 @@ export type ReportFrontMatter = z.infer<typeof ReportFrontMatterSchema>;
 
 // Type-level exhaustiveness guard — adding a new RunStatus variant must
 // also add the corresponding ReportFrontMatterSchema variant. Mirrors the
-// guard in lib/types.ts:73-80 for the RunStatus union.
+// guard in lib/types.ts for the RunStatus union.
 import type { RunStatus } from '../types.js';
 type _ReportFrontMatterExhaustivenessCheck = Exclude<
   RunStatus['kind'],
@@ -112,13 +122,7 @@ type _ReportFrontMatterExhaustivenessCheck = Exclude<
 const _reportFrontMatterOk: _ReportFrontMatterExhaustivenessCheck = true;
 void _reportFrontMatterOk;
 
-// Body sections live as markdown content — findings rendered inline; the
-// front matter has only `findings_count` for `monkey list`'s row display.
-// The actual finding objects are persisted as a fenced JSON block in the
-// body (machine-readable on read-back), plus rendered as markdown for
-// human display.
-
-export const FindingsBlockSchema = z.object({
-  findings: z.array(FindingSchema),
-});
-export type FindingsBlock = z.infer<typeof FindingsBlockSchema>;
+// Body sections live as markdown content — Review rendered inline; the
+// front matter has only `verdict` + `issues_count` for `monkey runs`'
+// row display. The actual Review object is persisted as a fenced JSON
+// block in the body for human inspection.

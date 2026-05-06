@@ -1,5 +1,5 @@
 // Atomic write of report files. POSIX rename is atomic; readers (including
-// concurrent `monkey list` runs) see either the old content or the new,
+// concurrent `monkey runs` runs) see either the old content or the new,
 // never partial.
 //
 // Edge cases addressed:
@@ -12,11 +12,12 @@ import { mkdir, rename, writeFile, readdir, stat, unlink, readFile } from 'node:
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { REPORT_SCHEMA_VERSION as CURRENT_SCHEMA_VERSION } from './schema.js';
-import { sanitizeText } from '../findings/sanitize.js';
+import { sanitizeText, sanitizeReview } from '../findings/sanitize.js';
 import { renderRunningReport, renderTerminalReport } from './render.js';
 import { reportFilename, reportPath, tmpPath } from './paths.js';
 import { ReportFrontMatterSchema, type ReportFrontMatter } from './schema.js';
-import type { ConsoleEvent, Finding, NetworkFailure, RunStatus } from '../types.js';
+import { reviewForErrored } from '../review/synthetic.js';
+import type { ConsoleEvent, NetworkFailure, RunStatus } from '../types.js';
 
 export interface InitialReport {
   filePath: string;
@@ -57,12 +58,11 @@ export async function writeReportInitial(opts: {
   return { filePath, frontMatter: fm };
 }
 
-// Update an in-flight report to a terminal status. Sanitizes findings + error.
+// Update an in-flight report to a terminal status. Sanitizes review + error.
 export async function writeReportTerminal(opts: {
   filePath: string;
   initialFm: ReportFrontMatter;
   status: RunStatus;
-  findings: Finding[];
   consoleErrors?: ConsoleEvent[];
   networkFailures?: NetworkFailure[];
   finishedAt: Date;
@@ -70,31 +70,49 @@ export async function writeReportTerminal(opts: {
   sessionId: string;
   replayUrl: string;
 }): Promise<void> {
-  const sanitizedFindings = opts.findings.map((f) => ({
-    ...f,
-    summary: sanitizeText(f.summary),
-    details: sanitizeText(f.details),
-  }));
+  // Sanitize the Review in-place. The synthetic-Review templates are
+  // already sanitized at construction; the adjudicator-emitted Review
+  // gets sanitized here to scrub any LLM-leaked secrets.
+  const sanitizedStatus = sanitizeStatus(opts.status);
 
   const fm: ReportFrontMatter = buildTerminalFrontMatter({
     initialFm: opts.initialFm,
-    status: opts.status,
+    status: sanitizedStatus,
     finishedAt: opts.finishedAt,
     sessionId: opts.sessionId,
     replayUrl: opts.replayUrl,
-    findingsCount: sanitizedFindings.length,
   });
   ReportFrontMatterSchema.parse(fm);
 
   const content = renderTerminalReport({
     fm,
-    status: opts.status,
-    findings: sanitizedFindings,
+    status: sanitizedStatus,
     consoleErrors: opts.consoleErrors,
     networkFailures: opts.networkFailures,
     costSummary: opts.costSummary,
   });
   await atomicWrite(opts.filePath, content);
+}
+
+function sanitizeStatus(status: RunStatus): RunStatus {
+  if (!('review' in status)) return status;
+  const review = sanitizeReview(status.review);
+  switch (status.kind) {
+    case 'completed':
+      return { ...status, review };
+    case 'timed_out':
+      return { ...status, review };
+    case 'exceeded_tokens':
+      return { ...status, review };
+    case 'adjudicator_failed':
+      return { ...status, review, error: sanitizeText(status.error) };
+    case 'errored':
+      return { ...status, review, error: sanitizeText(status.error) };
+    case 'not_started':
+      return { ...status, review, reason: sanitizeText(status.reason) };
+    case 'aborted':
+      return { ...status, review };
+  }
 }
 
 function buildTerminalFrontMatter(opts: {
@@ -103,7 +121,6 @@ function buildTerminalFrontMatter(opts: {
   finishedAt: Date;
   sessionId: string;
   replayUrl: string;
-  findingsCount: number;
 }): ReportFrontMatter {
   const base = {
     $schema_version: CURRENT_SCHEMA_VERSION,
@@ -121,7 +138,8 @@ function buildTerminalFrontMatter(opts: {
         session_id: opts.sessionId,
         replay_url: opts.replayUrl,
         ranForMs: opts.status.ranForMs,
-        findings_count: opts.findingsCount,
+        verdict: opts.status.review.verdict,
+        issues_count: opts.status.review.issues.length,
         tokens_used: opts.status.tokensUsed ?? null,
       };
     case 'timed_out':
@@ -131,7 +149,8 @@ function buildTerminalFrontMatter(opts: {
         session_id: opts.sessionId,
         replay_url: opts.replayUrl,
         ranForMs: opts.status.ranForMs,
-        findings_count: opts.findingsCount,
+        verdict: opts.status.review.verdict,
+        issues_count: opts.status.review.issues.length,
       };
     case 'exceeded_tokens':
       return {
@@ -140,7 +159,8 @@ function buildTerminalFrontMatter(opts: {
         session_id: opts.sessionId,
         replay_url: opts.replayUrl,
         ranForMs: opts.status.ranForMs,
-        findings_count: opts.findingsCount,
+        verdict: opts.status.review.verdict,
+        issues_count: opts.status.review.issues.length,
       };
     case 'adjudicator_failed':
       return {
@@ -149,8 +169,9 @@ function buildTerminalFrontMatter(opts: {
         session_id: opts.sessionId,
         replay_url: opts.replayUrl,
         ranForMs: opts.status.ranForMs,
-        findings_count: opts.findingsCount,
-        error: sanitizeText(opts.status.error),
+        verdict: opts.status.review.verdict,
+        issues_count: opts.status.review.issues.length,
+        error: opts.status.error,
         error_kind: opts.status.errorKind,
       };
     case 'errored':
@@ -160,7 +181,8 @@ function buildTerminalFrontMatter(opts: {
         session_id: opts.sessionId || null,
         replay_url: opts.replayUrl || null,
         ranForMs: opts.status.ranForMs,
-        error: sanitizeText(opts.status.error),
+        verdict: opts.status.review.verdict,
+        error: opts.status.error,
       };
     case 'not_started':
       return {
@@ -168,7 +190,8 @@ function buildTerminalFrontMatter(opts: {
         status: 'not_started' as const,
         session_id: opts.sessionId || null,
         replay_url: opts.replayUrl || null,
-        reason: sanitizeText(opts.status.reason),
+        verdict: opts.status.review.verdict,
+        reason: opts.status.reason,
       };
     case 'aborted':
       return {
@@ -177,6 +200,7 @@ function buildTerminalFrontMatter(opts: {
         session_id: opts.sessionId || null,
         replay_url: opts.replayUrl || null,
         ranForMs: opts.status.ranForMs,
+        verdict: opts.status.review.verdict,
       };
     case 'running':
       throw new Error('buildTerminalFrontMatter called with status running');
@@ -221,7 +245,6 @@ export async function sweepStaleRunningReports(opts: {
     const s = await stat(filePath).catch(() => null);
     if (!s) continue;
     if (s.mtimeMs > threshold) continue;
-    // Old file — peek at front matter
     let text: string;
     try {
       text = await readFile(filePath, 'utf-8');
@@ -229,11 +252,12 @@ export async function sweepStaleRunningReports(opts: {
       continue;
     }
     if (!/^status:\s*"running"/m.test(text)) continue;
-    // Mutate to errored. Best-effort; don't crash on parse failure.
     try {
       const fm = parseFrontMatterRaw(text);
       if (!fm || fm.status !== 'running') continue;
       const finishedAt = new Date(s.mtimeMs).toISOString();
+      const errMsg = 'process crashed before cleanup';
+      const review = reviewForErrored(errMsg);
       const newFm: ReportFrontMatter = {
         $schema_version: CURRENT_SCHEMA_VERSION,
         status: 'errored' as const,
@@ -244,12 +268,12 @@ export async function sweepStaleRunningReports(opts: {
         session_id: (fm.session_id as string) || null,
         replay_url: (fm.replay_url as string) || null,
         ranForMs: 0,
-        error: 'process crashed before cleanup',
+        verdict: review.verdict,
+        error: errMsg,
       };
       const newContent = renderTerminalReport({
         fm: newFm,
-        status: { kind: 'errored', error: 'process crashed before cleanup', ranForMs: 0 },
-        findings: [],
+        status: { kind: 'errored', review, error: errMsg, ranForMs: 0 },
       });
       await atomicWrite(filePath, newContent);
     } catch {
@@ -259,7 +283,6 @@ export async function sweepStaleRunningReports(opts: {
 }
 
 // Best-effort YAML front-matter peek for the orphan-sweep path.
-// Production-grade YAML parsing is overkill here; just match key:value lines.
 function parseFrontMatterRaw(text: string): Record<string, unknown> | null {
   const m = text.match(/^---\n([\s\S]*?)\n---/);
   if (!m) return null;

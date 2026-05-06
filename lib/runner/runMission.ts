@@ -4,13 +4,16 @@
 //   3. Print [N/M] header with live view + replay URLs
 //   4. Connect Stagehand
 //   5. Probe — if sign-in-page, run auth dispatch + retry probe (1x)
-//   6. Execute agent (CUA loop with record_observation tool)
+//   6. Execute agent (Stagehand hybrid mode: act/goto/extract + pixel fallbacks)
 //   7. Fetch session events (console + network) post-mission
-//   8. Lift deterministic findings (console errors + 4xx/5xx)
-//   9. Build in-memory trace; run adjudicator with provenance enforcement
-//   10. Combine lifter + adjudicator findings; update report; close session
+//   8. Lift deterministic Issues (console errors + 4xx/5xx)
+//   9. Build in-memory trace; run adjudicator → Review
+//   10. Update report; close session
 //
-// Each step's failure mode is mapped onto the RunStatus discriminated union.
+// Each step's failure mode is mapped onto the RunStatus discriminated
+// union. Every non-running RunStatus carries a Review (real one from the
+// adjudicator on `completed`; synthetic on failure paths) so JSON
+// consumers don't have to branch on its presence.
 
 import { randomUUID } from 'node:crypto';
 import * as log from '../log/stderr.js';
@@ -21,18 +24,26 @@ import { writeReportInitial, writeReportTerminal } from '../report/write.js';
 import { startWallClockTimer } from './caps.js';
 import { createSession, type MonkeySession } from '../bb/session.js';
 import { createStagehand } from '../stagehand/adapter.js';
-import { executeAgent, type RecordedObservation } from '../stagehand/agent.js';
-import { liftDeterministicFindings } from '../observe/promote.js';
+import { executeAgent } from '../stagehand/agent.js';
+import { liftDeterministicIssues } from '../observe/promote.js';
 import { pickModelApiKey } from '../stagehand/modelKey.js';
 import { buildTrace } from '../trace/build.js';
 import { runAdjudicator, AdjudicatorError } from '../adjudicate/run.js';
 import { fetchSessionEvents } from '../observe/fetchEvents.js';
-import { deriveVerdict } from './verdict.js';
+import {
+  reviewForAborted,
+  reviewForAdjudicatorFailed,
+  reviewForAdjudicatorRateLimited,
+  reviewForErrored,
+  reviewForExceededTokens,
+  reviewForNotStarted,
+  reviewForTimedOut,
+} from '../review/synthetic.js';
+import type { Review } from '../review/schema.js';
 import type { Browserbase } from '../bb/client.js';
 import type {
   AdjudicatorErrorKind,
   ConsoleEvent,
-  Finding,
   MissionResult,
   NetworkFailure,
   RunStatus,
@@ -87,7 +98,6 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       sessionTimeoutSec: opts.caps.sessionTimeoutSec,
     });
   } catch (err) {
-    // Session creation itself failed — write a not_started report.
     return await writeNotStartedReport(opts, startedAt, err as Error);
   }
 
@@ -127,15 +137,19 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       logPrefix: prefix,
     });
   } catch (err) {
+    const errMsg = sanitizeText((err as Error).message);
     return await finalize(opts, {
       session,
       stagehandHandle: null,
       reportPath,
       initialFm: initialFm!,
       startedAt,
-      status: { kind: 'errored', error: (err as Error).message, ranForMs: elapsed(startedAt) },
-      findings: [],
-      observations: [],
+      status: {
+        kind: 'errored',
+        review: reviewForErrored(errMsg),
+        error: errMsg,
+        ranForMs: elapsed(startedAt),
+      },
       consoleErrors: [],
       networkFailures: [],
     });
@@ -162,9 +176,11 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
         reportPath,
         initialFm: initialFm!,
         startedAt,
-        status: { kind: 'not_started', reason },
-        findings: [],
-        observations: [],
+        status: {
+          kind: 'not_started',
+          review: reviewForNotStarted(reason),
+          reason,
+        },
         consoleErrors: [],
         networkFailures: [],
       });
@@ -172,25 +188,28 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
 
     log.ok(`${prefix} Probe passed.`);
   } catch (err) {
+    const errMsg = sanitizeText((err as Error).message);
     return await finalize(opts, {
       session,
       stagehandHandle,
       reportPath,
       initialFm: initialFm!,
       startedAt,
-      status: { kind: 'errored', error: (err as Error).message, ranForMs: elapsed(startedAt) },
-      findings: [],
-      observations: [],
+      status: {
+        kind: 'errored',
+        review: reviewForErrored(errMsg),
+        error: errMsg,
+        ranForMs: elapsed(startedAt),
+      },
       consoleErrors: [],
       networkFailures: [],
     });
   }
 
   // Run the agent with wall-clock timer.
-  let agentSucceeded = false;
+  type AgentErrorKind = 'timed_out' | 'exceeded_tokens' | 'errored';
   let tokensUsed: number | undefined;
-  let agentError: { kind: RunStatus['kind']; message: string } | null = null;
-  let observations: RecordedObservation[] = [];
+  let agentError: { kind: AgentErrorKind; message: string } | null = null;
   let rawActions: unknown[] = [];
 
   const timer = startWallClockTimer({
@@ -212,20 +231,9 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
         : undefined,
       instruction: opts.mission,
       maxSteps: opts.caps.maxSteps,
-      tokenBudget: opts.caps.tokenBudget,
-      onBudgetExceeded: () => {
-        log.warn(`${prefix} Token budget exceeded — closing session.`);
-        // Same mechanism as wallclock fire: closing the BB session kills
-        // the agent's CDP transport, forcing the agent loop to throw.
-        // executeAgent's catch path detects budgetExceeded and reports
-        // the right error kind.
-        session!.close().catch(() => {});
-      },
       signal: opts.signal,
     });
-    agentSucceeded = result.success;
     tokensUsed = result.tokensUsed;
-    observations = result.observations;
     rawActions = result.rawActions;
     if (result.error) {
       if (timer.fired()) {
@@ -257,22 +265,20 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       })
     : { consoleErrors: [], networkFailures: [] };
 
-  // Deterministic-finding lifter: console errors + 4xx/5xx network failures
-  // become first-class `verified` findings. No LLM judgment.
-  const { findings: liftedFindings, introducedStepIds: liftedStepIdsList } = liftDeterministicFindings({
-    consoleErrors: collectedEvents.consoleErrors,
-    networkFailures: collectedEvents.networkFailures,
-  });
+  // Deterministic-issue lifter: console errors + 4xx/5xx network failures
+  // become first-class Issues with source='lifter'.
+  const { issues: lifterIssues } = liftDeterministicIssues(collectedEvents);
 
-  // Adjudicator pass: reads the trace + lifted findings, emits additional
-  // findings with cited provenance and rubric-derived severity. Skipped if
-  // the explorer failed badly (no actions, no observations) or if the
-  // mission was aborted/timed-out — there's nothing to adjudicate over.
-  let findings: Finding[] = liftedFindings;
+  // Adjudicator pass: reads trace + lifted issues, emits a Review.
+  // Runs whenever there's trace content to adjudicate, even on timed_out /
+  // exceeded_tokens / errored runs — the partial trace is still useful and
+  // the adjudicator can verdict 'partial' or 'unclear' accordingly. Skipped
+  // only when the agent produced zero actions or the run was SIGINT'd.
+  let review: Review | null = null;
   let adjudicatorError: string | null = null;
   let adjudicatorErrorKind: AdjudicatorErrorKind | null = null;
-  const haveTraceContent = rawActions.length > 0 || observations.length > 0;
-  if (haveTraceContent && !agentError && !timer.fired() && !opts.signal.aborted) {
+  const haveTraceContent = rawActions.length > 0;
+  if (haveTraceContent && !opts.signal.aborted) {
     try {
       const trace = buildTrace({
         header: {
@@ -283,7 +289,6 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
           agentModel: opts.agentModel,
         },
         rawActions,
-        observations,
         consoleErrors: collectedEvents.consoleErrors,
         networkFailures: collectedEvents.networkFailures,
       });
@@ -292,48 +297,90 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       const useAzureForAdj = adjModel.startsWith('anthropic/') && !!opts.credentials.anthropicBaseURL;
       const adjModelName = useAzureForAdj ? adjModel.replace(/^anthropic\//, '') : adjModel;
 
-      const adjudicated = await runAdjudicator({
+      review = await runAdjudicator({
         apiKey: pickModelApiKey(adjModel, opts.credentials),
         baseURL: useAzureForAdj ? opts.credentials.anthropicBaseURL : undefined,
         model: adjModelName,
         trace,
-        liftedFindings,
-        liftedStepIds: new Set(liftedStepIdsList),
+        liftedIssues: lifterIssues,
       });
-
-      findings = [...liftedFindings, ...adjudicated];
     } catch (err) {
-      const ae = err as AdjudicatorError;
-      adjudicatorError = sanitizeText(ae.message);
-      adjudicatorErrorKind = ae.kind;
-      log.warn(`${prefix} adjudicator failed (${ae.kind}); shipping ${liftedFindings.length} deterministic findings only.`);
+      // The adjudicator should always throw AdjudicatorError, but defend
+      // against bugs (or buildTrace failures) that leak a different shape.
+      if (err instanceof AdjudicatorError) {
+        adjudicatorError = sanitizeText(err.message);
+        adjudicatorErrorKind = err.kind;
+      } else {
+        const e = err as { name?: string; message?: string; stack?: string };
+        const msg = e?.message ?? String(err);
+        adjudicatorError = sanitizeText(`unexpected ${e?.name ?? 'error'}: ${msg}`);
+        adjudicatorErrorKind = 'other';
+        // Surface the unexpected error type so debugging is possible.
+        log.warn(`${prefix} adjudicator threw non-AdjudicatorError (${e?.name ?? 'unknown'}): ${msg}`);
+        if (process.env.MONKEY_DEBUG && e?.stack) {
+          log.warn(e.stack);
+        }
+      }
+      log.warn(
+        `${prefix} adjudicator failed (${adjudicatorErrorKind}); shipping ${lifterIssues.length} lifter issue(s) only.`,
+      );
     }
   }
 
-  // Build terminal status. Adjudicator failure is treated as mission-
-  // completed-with-warning: deterministic findings still ship, but the run
-  // is marked `adjudicator_failed` so consumers can distinguish.
+  // Build terminal status. The adjudicator may have produced a real Review
+  // even on partial-failure paths (timed_out / exceeded_tokens / errored),
+  // since we now run the adjudicator whenever there's trace content. Prefer
+  // that real Review; fall back to a synthetic only when adjudication didn't
+  // run or itself failed.
   const ranForMs = elapsed(startedAt);
   let status: RunStatus;
   if (opts.signal.aborted) {
-    status = { kind: 'aborted', ranForMs };
+    status = { kind: 'aborted', review: reviewForAborted(), ranForMs };
   } else if (agentError?.kind === 'timed_out' || timer.fired()) {
-    status = { kind: 'timed_out', findings, ranForMs };
-  } else if (agentError?.kind === 'exceeded_tokens') {
-    status = { kind: 'exceeded_tokens', findings, ranForMs };
-  } else if (agentError) {
-    status = { kind: 'errored', error: sanitizeText(agentError.message), ranForMs };
-  } else if (adjudicatorError) {
     status = {
-      kind: 'adjudicator_failed',
-      error: adjudicatorError,
-      errorKind: adjudicatorErrorKind ?? 'other',
-      findings,
+      kind: 'timed_out',
+      review: review ?? reviewForTimedOut(lifterIssues),
       ranForMs,
     };
+  } else if (agentError?.kind === 'exceeded_tokens') {
+    status = {
+      kind: 'exceeded_tokens',
+      review: review ?? reviewForExceededTokens(lifterIssues),
+      ranForMs,
+    };
+  } else if (agentError) {
+    const errMsg = sanitizeText(agentError.message);
+    status = {
+      kind: 'errored',
+      review: review ?? reviewForErrored(errMsg),
+      error: errMsg,
+      ranForMs,
+    };
+  } else if (adjudicatorError) {
+    const kind = adjudicatorErrorKind ?? 'other';
+    const synth =
+      kind === 'rate_limit'
+        ? reviewForAdjudicatorRateLimited(lifterIssues)
+        : reviewForAdjudicatorFailed(lifterIssues, adjudicatorError, kind);
+    status = {
+      kind: 'adjudicator_failed',
+      review: synth,
+      error: adjudicatorError,
+      errorKind: kind,
+      ranForMs,
+    };
+  } else if (review) {
+    status = { kind: 'completed', review, ranForMs, tokensUsed };
   } else {
-    void agentSucceeded; // currently informational; verdict derives from findings instead
-    status = { kind: 'completed', findings, ranForMs, tokensUsed };
+    // Agent returned without errors but produced no actions — there's no
+    // review to be had. Treat as a run-time error.
+    const errMsg = 'Agent produced no actions';
+    status = {
+      kind: 'errored',
+      review: reviewForErrored(errMsg),
+      error: errMsg,
+      ranForMs,
+    };
   }
 
   return await finalize(opts, {
@@ -343,8 +390,6 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
     initialFm: initialFm!,
     startedAt,
     status,
-    findings,
-    observations,
     consoleErrors: collectedEvents.consoleErrors,
     networkFailures: collectedEvents.networkFailures,
   });
@@ -363,8 +408,6 @@ async function finalize(
     initialFm: Awaited<ReturnType<typeof writeReportInitial>>['frontMatter'];
     startedAt: Date;
     status: RunStatus;
-    findings: Finding[];
-    observations: RecordedObservation[];
     consoleErrors: ConsoleEvent[];
     networkFailures: NetworkFailure[];
   },
@@ -374,10 +417,6 @@ async function finalize(
   const replayUrl = ctx.session?.replayUrl ?? '';
   const consoleErrors = ctx.consoleErrors;
   const networkFailures = ctx.networkFailures;
-  // Observations are captured in the trace + fed to the adjudicator; we
-  // don't surface them as a separate report section today. If the adjudicator
-  // turned an observation into a finding, it shows up there.
-  void ctx.observations;
 
   // Write terminal report
   let costSummary: string | undefined;
@@ -396,7 +435,6 @@ async function finalize(
         filePath: ctx.reportPath,
         initialFm: ctx.initialFm,
         status: ctx.status,
-        findings: ctx.findings,
         consoleErrors,
         networkFailures,
         finishedAt,
@@ -417,14 +455,12 @@ async function finalize(
     await ctx.session.close();
   }
 
-  const verifiedForVerdict = ctx.findings.filter((f) => f.tier !== 'speculative');
   return {
     index: opts.index,
     total: opts.total,
     mission: opts.mission,
     target: opts.target.url,
     status: ctx.status,
-    verdict: deriveVerdict(ctx.status, verifiedForVerdict),
     sessionId: sessionId || null,
     replayUrl: replayUrl || null,
     startedAt: ctx.startedAt.toISOString(),
@@ -455,14 +491,17 @@ async function writeNotStartedReport(
     replayUrl: null,
   }).catch(() => null);
 
-  const status: RunStatus = { kind: 'not_started', reason };
+  const status: RunStatus = {
+    kind: 'not_started',
+    review: reviewForNotStarted(reason),
+    reason,
+  };
 
   if (initial) {
     await writeReportTerminal({
       filePath: initial.filePath,
       initialFm: initial.frontMatter,
       status,
-      findings: [],
       finishedAt,
       sessionId: '',
       replayUrl: '',
@@ -475,7 +514,6 @@ async function writeNotStartedReport(
     mission: opts.mission,
     target: opts.target.url,
     status,
-    verdict: deriveVerdict(status, []),
     sessionId: null,
     replayUrl: null,
     startedAt: startedAt.toISOString(),

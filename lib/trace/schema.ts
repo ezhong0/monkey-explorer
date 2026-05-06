@@ -1,23 +1,17 @@
 // V1 trace schema. Append-only NDJSON: 1 header line + N step lines.
 //
 // What's IN the trace:
-//   - The actions Stagehand executed (with fresh page URL + timestamp)
-//   - Observations recorded by the explorer's `record_observation` tool
+//   - The actions Stagehand emitted in hybrid mode (semantic acts +
+//     pixel-level clicks/types/etc.), each with reasoning + page URL +
+//     timestamp.
 //   - Console errors + 4xx/5xx network events, bucketed into the step
-//     whose timestamp window covers them (best-effort correlation)
+//     whose timestamp window covers them (best-effort correlation).
 //
-// What's NOT in the V1 trace (and why):
-//   - Per-step screenshots: Stagehand v3.3.0's CUA mode doesn't expose a
-//     stable per-action screenshot hook. They live inside Stagehand's
-//     internal loop. Adding them is V2 work.
-//   - Per-step DOM snapshots: same reason. The a11y-tree capture lives
-//     inside Stagehand's extract path.
-//
-// V1 evidence types the adjudicator can cite credibly:
-//   network, console (oracle-backed) → verified
-//   observation                       → speculative
-//   screenshot, dom, diff             → V2 placeholder; cross-reference
-//                                       fails in V1, finding demoted
+// V1 evidence types the adjudicator can cite:
+//   network, console → oracle-backed; the deterministic lifter promotes
+//                      these into Issues directly.
+//   action           → the agent's recorded action at this step (semantic
+//                      via `act()` reasoning, or pixel-level args).
 
 import { z } from 'zod';
 
@@ -83,24 +77,18 @@ export const ActionStepSchema = TraceStepBaseSchema.extend({
   type: z.literal('action'),
   action: ActionRecordSchema,
   // Console/network events whose timestamp falls within this step's window.
-  // Bucketed best-effort by `lib/trace/correlate.ts`.
+  // Bucketed best-effort by `lib/trace/build.ts`.
   consoleEvents: z.array(ConsoleEventSchema).default([]),
   networkEvents: z.array(NetworkEventSchema).default([]),
 });
 
-export const ObservationStepSchema = TraceStepBaseSchema.extend({
-  type: z.literal('observation'),
-  text: z.string(),
-});
-
-export const TraceStepSchema = z.discriminatedUnion('type', [
-  ActionStepSchema,
-  ObservationStepSchema,
-]);
+// Today the trace only contains action steps. The discriminated union over
+// `type` is preserved (single variant) so future step kinds plug in without
+// reshaping consumers.
+export const TraceStepSchema = z.discriminatedUnion('type', [ActionStepSchema]);
 
 export type TraceStep = z.infer<typeof TraceStepSchema>;
 export type ActionStep = z.infer<typeof ActionStepSchema>;
-export type ObservationStep = z.infer<typeof ObservationStepSchema>;
 
 // ─── Trace header (line 0 of trace.ndjson) ───────────────────────────────────
 
@@ -121,8 +109,4 @@ export type TraceHeader = z.infer<typeof TraceHeaderSchema>;
 export interface Trace {
   header: TraceHeader;
   steps: TraceStep[];
-}
-
-export function buildStepIndex(trace: Trace): Set<string> {
-  return new Set(trace.steps.map((s) => s.id));
 }

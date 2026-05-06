@@ -1,57 +1,55 @@
-// Deterministic-finding lifter. Promotes oracle-backed signals from the
+// Deterministic-issue lifter. Promotes oracle-backed signals from the
 // observe stream (console errors + first-party 4xx/5xx network failures)
-// into Findings that don't require any LLM judgment.
-//
-// These findings tier as `verified` because the page (or its server) IS
-// the oracle: a JS exception said something failed; a 4xx/5xx response
-// IS a server-side error.
+// into Issues that don't require any LLM judgment. These flow into the
+// adjudicator as INPUT — the adjudicator must include critical/high
+// lifter Issues in its Review (enforced by validator).
 //
 // StepId namespace: `step_console_NNNN` for console events,
 // `step_network_NNNN` for network events. Distinct from trace action
-// steps (`step_NNNN`) so the adjudicator's validator can disambiguate.
-// The adjudicator schema enforces both shapes via an anchored regex
-// (lib/adjudicate/run.ts ZOD_TO_JSON_SCHEMA).
+// steps (`step_NNNN`) so cross-references can disambiguate. The Review
+// schema's StepCite regex enforces both shapes.
 
-import type { ConsoleEvent, Finding, NetworkFailure, Provenance } from '../types.js';
+import type { ConsoleEvent, NetworkFailure } from '../types.js';
+import type { Issue, Severity, StepCite } from '../review/schema.js';
 
 function eventStepId(prefix: 'console' | 'network', index: number): string {
   return `step_${prefix}_${String(index).padStart(4, '0')}`;
 }
 
-function severityForStatus(status: number | undefined, failure: string | undefined): Finding['severity'] {
+function severityForStatus(status: number | undefined, failure: string | undefined): Severity {
   if (status != null) {
     if (status >= 500) return 'high';     // server errors
     if (status === 429) return 'medium';  // rate limit on first-party
-    if (status >= 400) return 'medium';   // client errors on first-party are worth flagging
+    if (status >= 400) return 'medium';   // client errors on first-party
     return 'observation';
   }
   if (failure) return 'high';             // net::ERR_* — request didn't even land
   return 'observation';
 }
 
-export function liftConsoleError(event: ConsoleEvent, index: number): Finding {
+export function liftConsoleError(event: ConsoleEvent, index: number): Issue {
   const stepId = eventStepId('console', index);
-  const provenance: Provenance[] = [{ stepId, evidenceType: 'console' }];
+  const cites: StepCite[] = [{ stepId, evidenceType: 'console' }];
   const sourceLine = event.source ? ` at ${event.source.url}:${event.source.line}` : '';
   return {
+    source: 'lifter',
     severity: event.level === 'error' ? 'high' : 'low',
     summary: `Console ${event.level}: ${event.message.slice(0, 100)}${event.message.length > 100 ? '…' : ''}`,
     details: `Console ${event.level} captured during the mission${sourceLine}.\n\nFull message:\n${event.message}`,
-    provenance,
-    tier: 'verified',
+    cites,
   };
 }
 
-export function liftNetworkFailure(event: NetworkFailure, index: number): Finding {
+export function liftNetworkFailure(event: NetworkFailure, index: number): Issue {
   const stepId = eventStepId('network', index);
-  const provenance: Provenance[] = [{ stepId, evidenceType: 'network' }];
+  const cites: StepCite[] = [{ stepId, evidenceType: 'network' }];
   const statusOrFailure = event.status != null ? String(event.status) : event.failure ?? 'failed';
   return {
+    source: 'lifter',
     severity: severityForStatus(event.status, event.failure),
     summary: `Network ${statusOrFailure}: ${event.method} ${event.url}`,
     details: `First-party network request failed during the mission.\n\n${event.method} ${event.url}\nStatus: ${event.status ?? '(no response)'}\nFailure: ${event.failure ?? '(none)'}\nTimestamp: ${event.timestamp}`,
-    provenance,
-    tier: 'verified',
+    cites,
   };
 }
 
@@ -60,28 +58,10 @@ export interface LifterInput {
   networkFailures: NetworkFailure[];
 }
 
-export interface LifterOutput {
-  findings: Finding[];
-  /** stepIds the lifter introduced — adjudicator's prompt should know about
-   *  these so it doesn't re-derive the same findings. */
-  introducedStepIds: string[];
-}
-
-export function liftDeterministicFindings(input: LifterInput): LifterOutput {
-  const findings: Finding[] = [];
-  const introducedStepIds: string[] = [];
-
-  input.consoleErrors.forEach((evt, i) => {
-    const f = liftConsoleError(evt, i);
-    findings.push(f);
-    if (f.provenance) introducedStepIds.push(...f.provenance.map((p) => p.stepId));
-  });
-
-  input.networkFailures.forEach((evt, i) => {
-    const f = liftNetworkFailure(evt, i);
-    findings.push(f);
-    if (f.provenance) introducedStepIds.push(...f.provenance.map((p) => p.stepId));
-  });
-
-  return { findings, introducedStepIds };
+export function liftDeterministicIssues(input: LifterInput): { issues: Issue[] } {
+  const issues: Issue[] = [
+    ...input.consoleErrors.map(liftConsoleError),
+    ...input.networkFailures.map(liftNetworkFailure),
+  ];
+  return { issues };
 }

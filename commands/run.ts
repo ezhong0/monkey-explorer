@@ -37,9 +37,6 @@ export interface RunOpts {
   positionalMissions: string[];
   dryRun: boolean;
   json: boolean;
-  /** When true, include speculative-tier findings in report + JSON.
-   *  Default: hide them entirely (only verified findings surface). */
-  includeSpeculative: boolean;
   nonInteractive: boolean;
 }
 
@@ -127,7 +124,6 @@ export async function runRun(opts: RunOpts): Promise<number> {
           monkeyVersion: version,
           results: [],
           walledMs: 0,
-          includeSpeculative: opts.includeSpeculative,
         }),
       );
     }
@@ -200,7 +196,6 @@ export async function runRun(opts: RunOpts): Promise<number> {
         monkeyVersion: version,
         results,
         walledMs,
-        includeSpeculative: opts.includeSpeculative,
       }),
     );
   } else {
@@ -212,48 +207,59 @@ export async function runRun(opts: RunOpts): Promise<number> {
     }
   }
 
-  const anyCompleted = results.some((r) => r.status.kind === 'completed');
-  return anyCompleted ? 0 : 1;
+  const anyShipReady = results.some((r) => verdictOf(r.status) === 'works');
+  return anyShipReady ? 0 : 1;
+}
+
+const VERDICT_GLYPH = {
+  works: '✓ works   ',
+  broken: '✗ broken  ',
+  partial: '◐ partial ',
+  unclear: '? unclear ',
+} as const;
+
+function verdictOf(s: RunStatus): 'works' | 'broken' | 'partial' | 'unclear' {
+  if ('review' in s) return s.review.verdict;
+  return 'unclear';
 }
 
 function printSummary(results: MissionResult[], wallMs: number, agentModel: string): void {
   log.blank();
   log.info('─── Run summary ────────────────────────────────');
   const total = results.length;
-  const completed = results.filter((r) => r.status.kind === 'completed').length;
+  const by_verdict = { works: 0, broken: 0, partial: 0, unclear: 0 };
+  for (const r of results) by_verdict[verdictOf(r.status)] += 1;
 
-  log.info(`${completed}/${total} mission(s) completed in ${fmtDuration(wallMs)}${total > 1 ? ' (wall — ran in parallel)' : ''}.`);
+  log.info(`${total} mission(s) in ${fmtDuration(wallMs)}${total > 1 ? ' (wall — ran in parallel)' : ''}.`);
+  const verdictLine = (
+    [
+      ['works', by_verdict.works],
+      ['broken', by_verdict.broken],
+      ['partial', by_verdict.partial],
+      ['unclear', by_verdict.unclear],
+    ] as const
+  )
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${n} ${k}`)
+    .join(' · ');
+  if (verdictLine) log.info(`Verdicts: ${verdictLine}`);
 
-  let findingsTotal = 0;
-  const sevCounts: Record<string, number> = {};
+  log.info('Per-mission:');
   for (const r of results) {
-    if (r.status.kind === 'completed' || r.status.kind === 'timed_out' || r.status.kind === 'exceeded_tokens') {
-      findingsTotal += r.status.findings.length;
-      for (const f of r.status.findings) {
-        sevCounts[f.severity] = (sevCounts[f.severity] ?? 0) + 1;
-      }
-    }
-  }
-  if (findingsTotal > 0) {
-    const sevStr = Object.entries(sevCounts)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join(' · ');
-    log.info(`${findingsTotal} findings — ${sevStr}`);
+    const v = verdictOf(r.status);
+    const glyph = VERDICT_GLYPH[v];
+    const diag =
+      'review' in r.status && r.status.review.diagnostic
+        ? `  [diagnostic: ${r.status.review.diagnostic}]`
+        : '';
+    log.info(`  ${glyph} ${r.mission}${diag}`);
   }
 
-  const failed = results.filter((r) => r.status.kind !== 'completed');
-  if (failed.length > 0) {
-    log.info(`Issues:`);
-    for (const r of failed) {
-      const errStr =
-        r.status.kind === 'errored' || r.status.kind === 'adjudicator_failed'
-          ? `: ${r.status.error}`
-          : r.status.kind === 'not_started'
-            ? `: ${r.status.reason}`
-            : '';
-      log.info(`  ${r.mission} → ${r.status.kind}${errStr}`);
-    }
+  let issuesTotal = 0;
+  for (const r of results) {
+    if ('review' in r.status) issuesTotal += r.status.review.issues.length;
   }
+  if (issuesTotal > 0) log.info(`${issuesTotal} issue(s) across all missions.`);
 
   let totalDollars = 0;
   let totalTokens = 0;

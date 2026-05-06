@@ -12,6 +12,7 @@
 
 import * as log from '../log/stderr.js';
 import { runMission, type RunMissionOpts } from './runMission.js';
+import { reviewForErrored } from '../review/synthetic.js';
 import type { MissionResult } from '../types.js';
 
 const DEFAULT_BB_CONCURRENT_LIMIT = 3; // Developer plan default
@@ -47,16 +48,22 @@ export async function runMissions(opts: RunMissionsOpts): Promise<MissionResult[
       index,
       total,
     }).catch((err) => {
-      // Defensive: should never throw to here; runMission catches its own errors
-      // and returns a MissionResult with errored status. But just in case:
+      // Defensive: should never throw to here; runMission catches its own
+      // errors and returns a MissionResult with errored status. But just in
+      // case, build one with a synthetic Review.
       const finishedAt = new Date().toISOString();
+      const errMsg = (err as Error).message;
       const result: MissionResult = {
         index,
         total,
         mission,
         target: opts.target.url,
-        status: { kind: 'errored', error: (err as Error).message, ranForMs: 0 },
-        verdict: 'fail',
+        status: {
+          kind: 'errored',
+          review: reviewForErrored(errMsg),
+          error: errMsg,
+          ranForMs: 0,
+        },
         sessionId: null,
         replayUrl: null,
         startedAt: finishedAt,

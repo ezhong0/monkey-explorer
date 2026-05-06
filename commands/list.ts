@@ -22,7 +22,8 @@ interface DisplayEntry {
   status: string;
   mission: string;
   durationMs: number | null;
-  findingsCount: number | null;
+  verdict: string | null;
+  issuesCount: number | null;
   liveViewUrl: string | null;
   replayUrl: string | null;
   isOrphan: boolean;
@@ -57,17 +58,14 @@ function fmtTime(iso: string): string {
   return iso.slice(11, 16);
 }
 
-function statusIcon(status: string): string {
-  switch (status) {
-    case 'completed': return '✓';
-    case 'errored':
-    case 'not_started': return '✗';
-    case 'timed_out':
-    case 'aborted':
-    case 'exceeded_tokens':
-    case 'interrupted': return '⚠';
-    default: return ' ';
-  }
+function verdictIcon(verdict: string | null, status: string): string {
+  if (verdict === 'works') return '✓';
+  if (verdict === 'broken') return '✗';
+  if (verdict === 'partial') return '◐';
+  if (verdict === 'unclear') return '?';
+  // No verdict (running, or legacy report): fall back to status-shape glyph.
+  if (status === 'running') return ' ';
+  return '?';
 }
 
 export async function runList(opts: {
@@ -139,17 +137,19 @@ async function buildDisplayEntry(
     status: fm.status,
     mission: fm.mission,
     durationMs: null,
-    findingsCount: null,
+    verdict: null,
+    issuesCount: null,
     liveViewUrl: null,
     replayUrl: null,
     isOrphan: false,
     targetName: e.targetName,
   };
 
-  if (fm.status !== 'running' && fm.status !== 'not_started' && 'finished_at' in fm) {
+  if (fm.status !== 'running' && 'finished_at' in fm && fm.finished_at) {
     base.durationMs = new Date(fm.finished_at).getTime() - new Date(fm.started_at).getTime();
   }
-  if ('findings_count' in fm) base.findingsCount = fm.findings_count;
+  if ('verdict' in fm) base.verdict = fm.verdict;
+  if ('issues_count' in fm) base.issuesCount = fm.issues_count;
   if ('replay_url' in fm) base.replayUrl = fm.replay_url;
 
   if (fm.status === 'running' && fm.session_id) {
@@ -192,14 +192,14 @@ function renderStatic(entries: DisplayEntry[]): void {
 
   if (recent.length > 0) {
     out.out(`RECENT (${recent.length}):`);
-    out.out(`  ${'TIME'.padEnd(5)}      ${'TARGET'.padEnd(20)} MISSION   ${'DURATION'.padEnd(8)}  ${'FINDINGS'.padEnd(12)}  REPLAY`);
+    out.out(`  ${'TIME'.padEnd(5)}      ${'TARGET'.padEnd(20)} MISSION   ${'DURATION'.padEnd(8)}  ${'ISSUES'.padEnd(10)}  REPLAY`);
     for (const e of recent) {
       const t = fmtTime(e.startedAt);
-      const icon = statusIcon(e.status);
+      const icon = verdictIcon(e.verdict, e.status);
       const dur = fmtDuration(e.durationMs).padEnd(8);
-      const findings = e.findingsCount != null ? `${e.findingsCount} findings`.padEnd(12) : ' '.repeat(12);
+      const issues = e.issuesCount != null ? `${e.issuesCount} issue(s)`.padEnd(10) : ' '.repeat(10);
       const url = e.replayUrl ?? '';
-      out.out(`  ${t}  ${icon}  ${e.targetName.padEnd(20)} ${e.mission}  ${dur}  ${findings}  ${url}`);
+      out.out(`  ${t}  ${icon}  ${e.targetName.padEnd(20)} ${e.mission}  ${dur}  ${issues}  ${url}`);
     }
   }
 }
@@ -207,10 +207,10 @@ function renderStatic(entries: DisplayEntry[]): void {
 async function renderInteractive(entries: DisplayEntry[]): Promise<number> {
   const choices = entries.map((e, i) => {
     const t = fmtTime(e.startedAt);
-    const icon = statusIcon(e.status);
+    const icon = verdictIcon(e.verdict, e.status);
     const dur = fmtDuration(e.durationMs).padEnd(8);
-    const findings = e.findingsCount != null ? `${e.findingsCount} findings` : '';
-    const label = `${t}  ${icon}  ${e.targetName.padEnd(20)} ${e.mission}  ${dur}  ${findings}`;
+    const issues = e.issuesCount != null ? `${e.issuesCount} issue(s)` : '';
+    const label = `${t}  ${icon}  ${e.targetName.padEnd(20)} ${e.mission}  ${dur}  ${issues}`;
     return { name: label, value: i };
   });
 

@@ -28,7 +28,6 @@ interface Argv {
   help?: boolean;
   version?: boolean;
   json?: boolean;
-  'include-speculative'?: boolean;
   'non-interactive'?: boolean;
   // login flags
   'browserbase-key'?: string;
@@ -62,7 +61,7 @@ function parseArgs(argv: string[]): Argv {
       'test-password',
       'out',
     ],
-    boolean: ['dry-run', 'help', 'version', 'json', 'include-speculative', 'non-interactive', 'skip-bootstrap', 'reset', 'no-auth'],
+    boolean: ['dry-run', 'help', 'version', 'json', 'non-interactive', 'skip-bootstrap', 'reset', 'no-auth'],
     alias: { h: 'help', v: 'version' },
   }) as Argv;
 }
@@ -100,8 +99,6 @@ Run flags:
   --target <name>           Run against a specific named target (default: current).
   --json                    Emit final aggregate JSON to stdout (for scripts/agents).
                             Streaming progress still goes to stderr.
-  --include-speculative     Surface speculative-tier findings in the report
-                            and JSON. Off by default — verified findings only.
   --non-interactive         Error instead of prompting (CI/agents).
   --dry-run                 Print plan without spawning sessions.
   --help, -h                This message.
@@ -423,7 +420,6 @@ async function main(argv: string[]): Promise<number> {
           positionalMissions,
           dryRun: Boolean(args['dry-run']),
           json: Boolean(args.json),
-          includeSpeculative: Boolean(args['include-speculative']),
           nonInteractive: Boolean(args['non-interactive']),
         });
       }

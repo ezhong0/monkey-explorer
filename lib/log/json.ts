@@ -3,33 +3,43 @@
 //
 // Schema is intended to be stable. If we ever break it, bump the
 // `monkey_version` field and document the change.
+//
+// The reframe: each mission carries a `verdict` (works | broken | partial
+// | unclear) plus the full `review` object. Claude branches on `verdict`
+// to decide ship/iterate; details live in `review` for triage.
 
-import type { AdjudicatorErrorKind, Finding, MissionResult, RunStatus } from '../types.js';
-import { aggregateVerdict, type Verdict } from '../runner/verdict.js';
+import type { Review, Verdict } from '../review/schema.js';
+import type {
+  AdjudicatorErrorKind,
+  ConsoleEvent,
+  MissionResult,
+  NetworkFailure,
+  RunStatus,
+} from '../types.js';
 
 export type { Verdict };
 
 export interface JsonOutputMission {
   mission: string;
   target: string;
-  status: string;
-  /** PASS / FAIL / INCONCLUSIVE — Claude Code's primary signal. Derived
-   *  from verified findings: any critical/high → fail; zero verified → pass;
-   *  otherwise inconclusive. Mission-level errors (timeout, errored,
-   *  not_started) → fail. */
+
+  /** Per-mission verdict — Claude's primary branch signal. */
   verdict: Verdict;
+  /** 1–3 sentence summary lifted from review.summary; safe for one-line display. */
+  summary: string;
+  /** Full Review object — tested[], worked[], issues[], suggestions[]. */
+  review: Review;
+
+  status: RunStatus['kind'];
   ranForMs: number | null;
   startedAt: string;
   finishedAt: string;
-  findings: Finding[];                  // verified-tier only by default
-  findingsCount: number;                // count of verified
-  speculativeFindings?: Finding[];      // present only when --include-speculative
-  consoleErrors: unknown[];
-  networkFailures: unknown[];
+  consoleErrors: ConsoleEvent[];
+  networkFailures: NetworkFailure[];
   tokensUsed: number | null;
   error: string | null;
-  /** Populated when status === 'adjudicator_failed'. Lets CI/Claude Code
-   *  decide whether the failure is retryable (rate_limit) or not (parse). */
+  /** Populated when status === 'adjudicator_failed'. Lets CI/Claude
+   *  decide whether the failure is retryable (rate_limit) or not. */
   adjudicatorErrorKind: AdjudicatorErrorKind | null;
   reason: string | null;
   sessionId: string | null;
@@ -42,15 +52,9 @@ export interface JsonOutput {
   missions: JsonOutputMission[];
   summary: {
     total: number;
-    completed: number;
-    failed: number;
-    /** Top-level verdict across all missions: PASS iff every mission is PASS,
-     *  FAIL if any mission is FAIL, INCONCLUSIVE otherwise. */
-    verdict: Verdict;
-    findingsTotal: number;
-    consoleErrorsTotal: number;
-    networkFailuresTotal: number;
+    by_verdict: { works: number; broken: number; partial: number; unclear: number };
     walledMs: number;
+    issuesTotal: number;
   };
 }
 
@@ -58,43 +62,35 @@ export function buildJsonOutput(opts: {
   monkeyVersion: string;
   results: MissionResult[];
   walledMs: number;
-  /** When true, emit speculative findings alongside verified in the
-   *  speculativeFindings field. Default: hide them entirely. */
-  includeSpeculative?: boolean;
 }): JsonOutput {
-  const missions = opts.results.map((r) => toJsonMission(r, opts.includeSpeculative ?? false));
+  const missions = opts.results.map(toJsonMission);
+  const by_verdict = { works: 0, broken: 0, partial: 0, unclear: 0 };
+  for (const m of missions) by_verdict[m.verdict] += 1;
   return {
     monkey_version: opts.monkeyVersion,
     missions,
     summary: {
       total: missions.length,
-      completed: missions.filter((m) => m.status === 'completed').length,
-      failed: missions.filter((m) => m.verdict === 'fail').length,
-      verdict: aggregateVerdict(missions.map((m) => m.verdict)),
-      findingsTotal: missions.reduce((sum, m) => sum + m.findingsCount, 0),
-      consoleErrorsTotal: missions.reduce((sum, m) => sum + m.consoleErrors.length, 0),
-      networkFailuresTotal: missions.reduce((sum, m) => sum + m.networkFailures.length, 0),
+      by_verdict,
       walledMs: opts.walledMs,
+      issuesTotal: missions.reduce((sum, m) => sum + m.review.issues.length, 0),
     },
   };
 }
 
-function toJsonMission(r: MissionResult, includeSpeculative: boolean): JsonOutputMission {
+function toJsonMission(r: MissionResult): JsonOutputMission {
   const ranForMs = ranForMsOf(r.status);
-  const allFindings = findingsOf(r.status);
-  const verified = allFindings.filter((f) => f.tier !== 'speculative');
-  const speculative = allFindings.filter((f) => f.tier === 'speculative');
+  const review = reviewOf(r.status);
   return {
     mission: r.mission,
     target: r.target,
+    verdict: review.verdict,
+    summary: review.summary,
+    review,
     status: r.status.kind,
-    verdict: r.verdict,
     ranForMs,
     startedAt: r.startedAt,
     finishedAt: r.finishedAt,
-    findings: verified,
-    findingsCount: verified.length,
-    ...(includeSpeculative ? { speculativeFindings: speculative } : {}),
     consoleErrors: r.consoleErrors,
     networkFailures: r.networkFailures,
     tokensUsed: tokensOf(r.status),
@@ -111,9 +107,11 @@ function ranForMsOf(s: RunStatus): number | null {
   if ('ranForMs' in s) return s.ranForMs;
   return null;
 }
-function findingsOf(s: RunStatus): Finding[] {
-  if ('findings' in s) return s.findings;
-  return [];
+function reviewOf(s: RunStatus): Review {
+  if ('review' in s) return s.review;
+  // 'running' is the only variant without a Review; runMission only emits
+  // terminal statuses to the result list, so this branch is defensive.
+  throw new Error(`reviewOf: status ${s.kind} has no review`);
 }
 function tokensOf(s: RunStatus): number | null {
   if (s.kind === 'completed' && s.tokensUsed != null) return s.tokensUsed;

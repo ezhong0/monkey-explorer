@@ -34,8 +34,8 @@ import {
   reviewForAborted,
   reviewForAdjudicatorFailed,
   reviewForAdjudicatorRateLimited,
+  reviewForAgentRateLimited,
   reviewForErrored,
-  reviewForExceededTokens,
   reviewForNotStarted,
   reviewForTimedOut,
 } from '../review/synthetic.js';
@@ -349,9 +349,15 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionResult> {
       ranForMs,
     };
   } else if (agentError?.kind === 'exceeded_tokens') {
+    // Today: 'exceeded_tokens' fires only on agent-side rate-limit/overload
+    // (classifyError maps API 429/529 + Stagehand "Failed after N attempts"
+    // to kind='rate_limit' which we wire here). Use the rate-limited
+    // synthetic Review so the diagnostic surfaces 'rate_limited' (retry me)
+    // not 'token_exceeded' (raise the budget). When real token-budget
+    // enforcement lands, swap in reviewForExceededTokens for that path.
     status = {
       kind: 'exceeded_tokens',
-      review: review ?? reviewForExceededTokens(lifterIssues),
+      review: review ?? reviewForAgentRateLimited(lifterIssues),
       ranForMs,
     };
   } else if (agentError) {

@@ -69,10 +69,16 @@ export function computeCost(opts: {
 }
 
 export function formatCostSummary(c: CostBreakdown): string {
+  // The displayed LLM cost is the AGENT model only. Stagehand's hybrid mode
+  // routes in-agent grounding (act/extract internals) through a separate
+  // executionModel — those tokens aren't in the agent's `result.usage` and
+  // aren't tracked here. The grounding model is typically cheaper per token,
+  // so the actual total is somewhat higher than displayed but close to the
+  // same order of magnitude.
   const parts: string[] = [];
   if (c.tokens != null && c.llmDollars != null) {
     parts.push(
-      `~$${c.llmDollars.toFixed(2)} LLM (${c.tokens.toLocaleString()} tokens @ $${c.effectiveRate.toFixed(2)}/M)`,
+      `~$${c.llmDollars.toFixed(2)} LLM agent (${c.tokens.toLocaleString()} tokens @ $${c.effectiveRate.toFixed(2)}/M, grounding not counted)`,
     );
   } else {
     parts.push('LLM cost: n/a (tokens not surfaced)');

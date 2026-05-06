@@ -39,6 +39,24 @@ export function reviewForExceededTokens(lifterIssues: Issue[]): Review {
   });
 }
 
+// Used when the agent hits Anthropic 429/529 (rate-limited or "Overloaded")
+// or Stagehand's "Failed after N attempts" wrapper. Distinct from
+// reviewForExceededTokens (real budget breach, never fires today since
+// budget enforcement isn't wired). The diagnostic 'rate_limited' tells the
+// caller to retry, vs 'token_exceeded' which says "raise the cap."
+export function reviewForAgentRateLimited(lifterIssues: Issue[]): Review {
+  return ReviewSchema.parse({
+    verdict: 'unclear',
+    diagnostic: 'rate_limited',
+    summary: 'Agent hit a transient API rate-limit / capacity issue before completing.',
+    issues: lifterIssues,
+    suggestions: [
+      'Retry in 60 seconds',
+      'If persistent, switch agent model or use a different deployment',
+    ],
+  });
+}
+
 export function reviewForAdjudicatorRateLimited(lifterIssues: Issue[]): Review {
   return ReviewSchema.parse({
     verdict: 'unclear',
